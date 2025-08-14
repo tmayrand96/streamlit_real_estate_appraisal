@@ -15,11 +15,29 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ---------------- CONFIG ----------------
-BASE_DIR = Path("/home/appraiser_information_system/mon-projet-recherche/regression_immo_BDF.py-1")
+# Base directory of the current script
+BASE_DIR = Path(__file__).parent
+
+# Paths to dataset and quantile models
 DATA_PATH = BASE_DIR / "donnees_BDF.csv"
 MODEL_Q05_PATH = BASE_DIR / "property_model_q05.joblib"
 MODEL_Q50_PATH = BASE_DIR / "property_model_q50.joblib"
 MODEL_Q95_PATH = BASE_DIR / "property_model_q95.joblib"
+
+# Load dataset
+try:
+    df = pd.read_csv(DATA_PATH)
+except FileNotFoundError:
+    st.error(f"Dataset introuvable : {DATA_PATH}")
+
+# Load quantile models
+try:
+    model_q05 = joblib.load(MODEL_Q05_PATH)
+    model_q50 = joblib.load(MODEL_Q50_PATH)
+    model_q95 = joblib.load(MODEL_Q95_PATH)
+except FileNotFoundError as e:
+    st.error(f"Model introuvable : {e.filename}")
+
 
 # Page configuration
 st.set_page_config(
