@@ -216,7 +216,7 @@ def create_quantile_chart(low, median, high):
         x=['Median Prediction'],
         y=[low],
         mode='markers',
-        name='Lower Bound (5th percentile)',
+        name='Worst-case Market Value (5th percentile)',
         marker=dict(color='#2ca02c', size=10, symbol='triangle-down'),
         showlegend=True
     ))
@@ -390,7 +390,7 @@ def main():
                     
                     with col1:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Lower Bound")
+                        st.markdown("### Worst-case Market Value")
                         st.markdown(f"## $ {low:,.0f}")
                         st.markdown("*5th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
