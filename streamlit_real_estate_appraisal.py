@@ -422,15 +422,8 @@ def main():
                 st.success("✅ Models trained and saved successfully!")
                 
                 # Display metrics
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.metric("R² Score", f"{metrics['R2']:.4f}")
-                    st.markdown(f"*The model explains {metrics['R2']*100:.1f}% of price variations*")
-                
-                with col2:
-                    st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
-                    st.markdown("*Average prediction error*")
+                st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
+                st.markdown("*Average prediction error*")
                 
                 # Model info
                 st.subheader("Model Information")
@@ -501,6 +494,11 @@ def main():
         
         ### Data Source:
         The model is trained on real estate data from Statistics Canada.
+        
+        ---
+        **Note**:  
+        The model is evaluated internally using several statistical metrics (including R²), but these are kept under the hood.  
+        What you see in the app are the confidence intervals and error metrics (such as MAE), which are the most relevant for decision-making.
         """)
 
 if __name__ == "__main__":
