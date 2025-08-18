@@ -207,7 +207,7 @@ def create_quantile_chart(low, median, high):
         x=['Median Prediction'],
         y=[high],
         mode='markers',
-        name='Upper Bound (95th percentile)',
+        name='Best Market Value (95th percentile)',
         marker=dict(color='#ff7f0e', size=10, symbol='triangle-up'),
         showlegend=True
     ))
@@ -404,7 +404,7 @@ def main():
                     
                     with col3:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Upper Bound")
+                        st.markdown("### Best Market Value")
                         st.markdown(f"## $ {high:,.0f}")
                         st.markdown("*95th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
