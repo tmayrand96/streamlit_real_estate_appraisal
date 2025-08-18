@@ -197,7 +197,7 @@ def create_quantile_chart(low, median, high):
     fig.add_trace(go.Bar(
         x=['Median Prediction'],
         y=[median],
-        name='Typical Market Value (50th percentile)',
+        name='Median (50th percentile)',
         marker_color='#1f77b4',
         width=0.6
     ))
