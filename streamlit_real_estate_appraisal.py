@@ -222,7 +222,7 @@ def create_quantile_chart(low, median, high):
         x=['Median Prediction'],
         y=[high],
         mode='markers',
-        name='Upper Bound (95th percentile)',
+        name='Best-case Market Value (95th percentile)',
         marker=dict(color='#ff7f0e', size=10, symbol='triangle-up'),
         showlegend=True
     ))
@@ -231,7 +231,7 @@ def create_quantile_chart(low, median, high):
         x=['Median Prediction'],
         y=[low],
         mode='markers',
-        name='Lower Bound (5th percentile)',
+        name='Worst-case Market Value (5th percentile)',
         marker=dict(color='#2ca02c', size=10, symbol='triangle-down'),
         showlegend=True
     ))
@@ -405,21 +405,21 @@ def main():
                     
                     with col1:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Lower Bound")
+                        st.markdown("### Worst-case Market Value")
                         st.markdown(f"## $ {low:,.0f}")
                         st.markdown("*5th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
                     
                     with col2:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Median")
+                        st.markdown("### Typical Market Value")
                         st.markdown(f"## $ {median:,.0f}")
                         st.markdown("*50th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
                     
                     with col3:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Upper Bound")
+                        st.markdown("### Best-case Market Value")
                         st.markdown(f"## $ {high:,.0f}")
                         st.markdown("*95th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
@@ -524,9 +524,9 @@ def main():
                 st.subheader("Model Information")
                 st.markdown("""
                 **Quantile Regression Models Trained:**
-                - **5th percentile model**: Lower bound predictions
-                - **50th percentile model**: Median predictions  
-                - **95th percentile model**: Upper bound predictions
+                - **5th percentile model**: Worst-case Market Value predictions
+                - **50th percentile model**: Typical Market Value  
+                - **95th percentile model**: Best-case Market Value predictions
                 
                 **Features Used:**
                 - Building area, terrace area, age, bedrooms, pool area
@@ -569,9 +569,9 @@ def main():
         
         ### Model Architecture:
         The system uses **quantile regression** with Gradient Boosting:
-        - **5th percentile model**: Lower bound predictions (conservative estimate)
-        - **50th percentile model**: Median predictions (most likely value)
-        - **95th percentile model**: Upper bound predictions (optimistic estimate)
+        - **5th percentile model**: Worst-case Market Value predictions
+        - **50th percentile model**: Typical Market Value
+        - **95th percentile model**: Best-case Market Value predictions
         
         ### Features Used:
         - Building area (m²)
