@@ -207,7 +207,7 @@ def create_quantile_chart(low, median, high):
         x=['Median Prediction'],
         y=[high],
         mode='markers',
-        name='Best Market Value (95th percentile)',
+        name='Upper Bound (95th percentile)',
         marker=dict(color='#ff7f0e', size=10, symbol='triangle-up'),
         showlegend=True
     ))
@@ -216,7 +216,7 @@ def create_quantile_chart(low, median, high):
         x=['Median Prediction'],
         y=[low],
         mode='markers',
-        name='Worst Market Value (5th percentile)',
+        name='Lower Bound (5th percentile)',
         marker=dict(color='#2ca02c', size=10, symbol='triangle-down'),
         showlegend=True
     ))
@@ -247,51 +247,7 @@ def create_quantile_chart(low, median, high):
     
     return fig
 
-def create_demo_properties_chart():
-    """Create chart for demo properties"""
-    demo_props = [
-        {"name": "Small Apartment", "etage": 2, "age": 5, "aire_batiment": 80, "aire_lot": 200, "prox_riverain": 0},
-        {"name": "Family House", "etage": 1, "age": 20, "aire_batiment": 150, "aire_lot": 500, "prox_riverain": 1},
-        {"name": "Studio", "etage": 3, "age": 70, "aire_batiment": 35, "aire_lot": 100, "prox_riverain": 0},
-        {"name": "Luxury Villa", "etage": 1, "age": 10, "aire_batiment": 300, "aire_lot": 1000, "prox_riverain": 1}
-    ]
-    
-    results = []
-    for prop in demo_props:
-        try:
-            low, median, high = predict_with_models(
-                prop["etage"], prop["age"], prop["aire_batiment"], 
-                prop["aire_lot"], prop["prox_riverain"]
-            )
-            price_per_m2 = median / prop["aire_batiment"]
-            
-            results.append({
-                "Property": prop["name"],
-                "Median Price": median,
-                "Price Range": f"${low:,.0f} -   ${high:,.0f}",
-                "Price per m²": price_per_m2,
-                "Building Area": prop["aire_batiment"],
-                "Age": prop["age"],
-                "Floor": prop["etage"]
-            })
-        except:
-            # Skip if model not trained
-            continue
-    
-    if results:
-        df_results = pd.DataFrame(results)
-        
-        # Create price comparison chart
-        fig = px.bar(df_results, x="Property", y="Median Price",
-                     title="Estimated Property Values (Demo Properties)",
-                     color="Bedrooms",
-                     color_continuous_scale="viridis")
-        
-        fig.update_layout(height=400)
-        
-        return fig, df_results
-    
-    return None, None
+
 
 def main():
     # Header
@@ -302,7 +258,7 @@ def main():
     st.sidebar.title("Navigation")
     page = st.sidebar.selectbox(
         "Choose a page:",
-        ["Home", "Property Valuation", "Demo Properties", "Model Performance", "About"]
+        ["Home", "Model Performance", "Property Valuation", "About"]
     )
     
     if page == "Home":
@@ -390,7 +346,7 @@ def main():
                     
                     with col1:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Worst Market Value")
+                        st.markdown("### Lower Bound")
                         st.markdown(f"## $ {low:,.0f}")
                         st.markdown("*5th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
@@ -404,7 +360,7 @@ def main():
                     
                     with col3:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Best Market Value")
+                        st.markdown("### Upper Bound")
                         st.markdown(f"## $ {high:,.0f}")
                         st.markdown("*95th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
@@ -424,9 +380,7 @@ def main():
                         confidence_range = high - low
                         st.metric("Confidence Range", f"${confidence_range:,.0f}")
                     
-                    with col3:
-                        confidence_percentage = ((high - low) / median) * 100
-                        st.metric("Uncertainty", f"{confidence_percentage:.1f}%")
+
                     
                     # Property analysis
                     st.subheader("Property Analysis")
@@ -455,34 +409,7 @@ def main():
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
     
-    elif page == "Demo Properties":
-        st.header("📊 Demo Properties")
-        
-        if not MODEL_Q50_PATH.exists():
-            st.error("⚠️ Models need to be trained first. Please go to 'Model Performance' to train the models.")
-            return
-        
-        fig, df_results = create_demo_properties_chart()
-        
-        if fig is not None:
-            # Display chart
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Display detailed results
-            st.subheader("Detailed Results")
-            st.dataframe(df_results, use_container_width=True)
-            
-            # Additional insights
-            st.subheader("Key Insights")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.info("**Size Matters**: Larger properties generally have better price-to-area ratios.")
-            
-            with col2:
-                st.info("**Age Impact**: Newer properties command premium prices, but well-maintained older properties can still be valuable.")
-        else:
-            st.warning("No demo results available. Please train the model first.")
+
     
     elif page == "Model Performance":
         st.header("📈 Model Training & Performance")
