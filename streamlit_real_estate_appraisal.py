@@ -117,25 +117,14 @@ st.markdown("""
 
 # ---------------- FONCTIONS ----------------
 def create_features(df, is_training=True):
-    """Create engineered features from raw data"""
+    """Prepare raw data features"""
     df = df.copy()
     
-    # Colonnes minimales
-    for col in ['Aire_Batiment', 'Aire_Terrasse', 'Age', 'Nombre_Chambres', 'Surface_Piscine']:
+    # Ensure all required columns exist
+    required_cols = ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"]
+    for col in required_cols:
         if col not in df.columns:
             df[col] = 0
-    
-    # Prix au m²
-    if 'Prix_de_vente' in df.columns and df['Prix_de_vente'].notna().any():
-        df['Prix_par_m2'] = df['Prix_de_vente'] / df['Aire_Batiment'].replace({0: np.nan})
-    else:
-        df['Prix_par_m2'] = np.nan
-    
-    # Variables dérivées
-    df['Ratio_Aire'] = df['Aire_Terrasse'] / df['Aire_Batiment'].replace({0: np.nan})
-    df['Age_squared'] = df['Age'] ** 2
-    df['Aire_Batiment_squared'] = df['Aire_Batiment'] ** 2
-    df['Interaction_Age_Aire'] = df['Age'] * df['Aire_Batiment']
     
     if not is_training:
         df = df.fillna(0)
@@ -152,11 +141,7 @@ def train_quantile_models(csv_path):
         df = create_features(df, is_training=True)
         df = df.dropna(subset=['Prix_de_vente'])
 
-    feature_cols = [
-        'Aire_Batiment', 'Aire_Terrasse', 'Age', 'Nombre_Chambres',
-        'Surface_Piscine', 'Prix_par_m2', 'Ratio_Aire',
-        'Age_squared', 'Aire_Batiment_squared', 'Interaction_Age_Aire'
-    ]
+    feature_cols = ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"]
     X = df[feature_cols].fillna(0)
     y = df['Prix_de_vente']
 
@@ -181,14 +166,14 @@ def train_quantile_models(csv_path):
 
     return metrics
 
-def predict_with_models(aire_batiment, aire_terrasse, age, chambres, piscine):
+def predict_with_models(etage, age, aire_batiment, aire_lot, prox_riverain):
     """Make predictions using all three quantile models"""
     inputs = pd.DataFrame([{
-        "Aire_Batiment": aire_batiment,
-        "Aire_Terrasse": aire_terrasse,
+        "Etage": etage,
         "Age": age,
-        "Nombre_Chambres": chambres,
-        "Surface_Piscine": piscine
+        "Aire_Batiment": aire_batiment,
+        "Aire_Lot": aire_lot,
+        "Prox_Riverain": prox_riverain
     }])
     inputs = create_features(inputs, is_training=False)
 
@@ -222,7 +207,7 @@ def create_quantile_chart(low, median, high):
         x=['Median Prediction'],
         y=[high],
         mode='markers',
-        name='Best-case Market Value (95th percentile)',
+        name='Upper Bound (95th percentile)',
         marker=dict(color='#ff7f0e', size=10, symbol='triangle-up'),
         showlegend=True
     ))
@@ -231,7 +216,7 @@ def create_quantile_chart(low, median, high):
         x=['Median Prediction'],
         y=[low],
         mode='markers',
-        name='Worst-case Market Value (5th percentile)',
+        name='Lower Bound (5th percentile)',
         marker=dict(color='#2ca02c', size=10, symbol='triangle-down'),
         showlegend=True
     ))
@@ -265,18 +250,18 @@ def create_quantile_chart(low, median, high):
 def create_demo_properties_chart():
     """Create chart for demo properties"""
     demo_props = [
-        {"name": "Small Apartment", "aire_batiment": 80, "aire_terrasse": 10, "age": 5, "chambres": 2, "piscine": 0},
-        {"name": "Family House", "aire_batiment": 150, "aire_terrasse": 30, "age": 20, "chambres": 4, "piscine": 20},
-        {"name": "Studio", "aire_batiment": 35, "aire_terrasse": 0, "age": 70, "chambres": 1, "piscine": 0},
-        {"name": "Luxury Villa", "aire_batiment": 300, "aire_terrasse": 100, "age": 10, "chambres": 6, "piscine": 50}
+        {"name": "Small Apartment", "etage": 2, "age": 5, "aire_batiment": 80, "aire_lot": 200, "prox_riverain": 0},
+        {"name": "Family House", "etage": 1, "age": 20, "aire_batiment": 150, "aire_lot": 500, "prox_riverain": 1},
+        {"name": "Studio", "etage": 3, "age": 70, "aire_batiment": 35, "aire_lot": 100, "prox_riverain": 0},
+        {"name": "Luxury Villa", "etage": 1, "age": 10, "aire_batiment": 300, "aire_lot": 1000, "prox_riverain": 1}
     ]
     
     results = []
     for prop in demo_props:
         try:
             low, median, high = predict_with_models(
-                prop["aire_batiment"], prop["aire_terrasse"], 
-                prop["age"], prop["chambres"], prop["piscine"]
+                prop["etage"], prop["age"], prop["aire_batiment"], 
+                prop["aire_lot"], prop["prox_riverain"]
             )
             price_per_m2 = median / prop["aire_batiment"]
             
@@ -287,7 +272,7 @@ def create_demo_properties_chart():
                 "Price per m²": price_per_m2,
                 "Building Area": prop["aire_batiment"],
                 "Age": prop["age"],
-                "Bedrooms": prop["chambres"]
+                "Floor": prop["etage"]
             })
         except:
             # Skip if model not trained
@@ -358,7 +343,7 @@ def main():
             st.metric("Prediction Range", "5th - 95th percentile", "Confidence Intervals")
         
         with col3:
-            st.metric("Features", "10 Engineered", "High Accuracy")
+            st.metric("Features", "5 Raw Attributes", "High Accuracy")
     
     elif page == "Property Valuation":
         st.header("🏠 Property Valuation")
@@ -373,13 +358,13 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                aire_batiment = st.number_input("Building Area (m²)", min_value=20.0, max_value=1000.0, value=120.0, step=10.0)
-                aire_terrasse = st.number_input("Terrace Area (m²)", min_value=0.0, max_value=200.0, value=15.0, step=5.0)
+                etage = st.number_input("Floor", min_value=1, max_value=20, value=2)
                 age = st.number_input("Building Age (years)", min_value=0, max_value=100, value=15)
+                aire_batiment = st.number_input("Building Area (m²)", min_value=20.0, max_value=1000.0, value=120.0, step=10.0)
             
             with col2:
-                chambres = st.number_input("Number of Bedrooms", min_value=1, max_value=10, value=3)
-                piscine = st.number_input("Pool Area (m²)", min_value=0.0, max_value=100.0, value=0.0, step=5.0)
+                aire_lot = st.number_input("Lot Area (m²)", min_value=50.0, max_value=2000.0, value=300.0, step=50.0)
+                prox_riverain = st.selectbox("Waterfront Proximity", options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
             
             submitted = st.form_submit_button("Get Valuation")
             
@@ -391,7 +376,7 @@ def main():
                         return
                     
                     # Make prediction
-                    low, median, high = predict_with_models(aire_batiment, aire_terrasse, age, chambres, piscine)
+                    low, median, high = predict_with_models(etage, age, aire_batiment, aire_lot, prox_riverain)
                     
                     # Display results
                     st.markdown('<div class="prediction-card">', unsafe_allow_html=True)
@@ -405,21 +390,21 @@ def main():
                     
                     with col1:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Worst-case Market Value")
+                        st.markdown("### Lower Bound")
                         st.markdown(f"## $ {low:,.0f}")
                         st.markdown("*5th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
                     
                     with col2:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Typical Market Value")
+                        st.markdown("### Median")
                         st.markdown(f"## $ {median:,.0f}")
                         st.markdown("*50th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
                     
                     with col3:
                         st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Best-case Market Value")
+                        st.markdown("### Upper Bound")
                         st.markdown(f"## $ {high:,.0f}")
                         st.markdown("*95th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
@@ -458,11 +443,11 @@ def main():
                     else:
                         analysis_text.append("**Condition**: Older building (may need renovation)")
                     
-                    if piscine > 0:
-                        analysis_text.append(f"**Luxury Feature**: Pool ({piscine} m²)")
+                    if prox_riverain == 1:
+                        analysis_text.append("**Premium Location**: Waterfront property")
                     
-                    if aire_terrasse > 0:
-                        analysis_text.append(f"**Outdoor Space**: Terrace ({aire_terrasse} m²)")
+                    analysis_text.append(f"**Floor Level**: {etage} floor(s)")
+                    analysis_text.append(f"**Lot Size**: {aire_lot} m² total area")
                     
                     for text in analysis_text:
                         st.markdown(f"• {text}")
@@ -524,13 +509,13 @@ def main():
                 st.subheader("Model Information")
                 st.markdown("""
                 **Quantile Regression Models Trained:**
-                - **5th percentile model**: Worst-case Market Value predictions
-                - **50th percentile model**: Typical Market Value  
-                - **95th percentile model**: Best-case Market Value predictions
+                - **5th percentile model**: Lower bound predictions
+                - **50th percentile model**: Median predictions  
+                - **95th percentile model**: Upper bound predictions
                 
                 **Features Used:**
-                - Building area, terrace area, age, bedrooms, pool area
-                - Engineered features: ratios, polynomials, interactions
+                - Floor level, building age, building area, lot area, waterfront proximity
+                - Raw property attributes from the dataset
                 - Robust scaling for outlier handling
                 """)
                 
@@ -569,17 +554,17 @@ def main():
         
         ### Model Architecture:
         The system uses **quantile regression** with Gradient Boosting:
-        - **5th percentile model**: Worst-case Market Value predictions
-        - **50th percentile model**: Typical Market Value
-        - **95th percentile model**: Best-case Market Value predictions
+        - **5th percentile model**: Lower bound predictions (conservative estimate)
+        - **50th percentile model**: Median predictions (most likely value)
+        - **95th percentile model**: Upper bound predictions (optimistic estimate)
         
         ### Features Used:
-        - Building area (m²)
-        - Terrace area (m²)
+        - Floor level
         - Building age (years)
-        - Number of bedrooms
-        - Pool area (m²)
-        - Engineered features (ratios, polynomials, interactions)
+        - Building area (m²)
+        - Lot area (m²)
+        - Waterfront proximity (Yes/No)
+        - Raw property attributes from the dataset
         
         ### Advantages of Quantile Regression:
         - **Uncertainty Quantification**: Provides confidence intervals
