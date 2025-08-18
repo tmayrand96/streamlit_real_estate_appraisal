@@ -509,9 +509,9 @@ def main():
                 st.subheader("Model Information")
                 st.markdown("""
                 **Quantile Regression Models Trained:**
-                - **5th percentile model**: Lower bound predictions
-                - **50th percentile model**: Median predictions  
-                - **95th percentile model**: Upper bound predictions
+                - **5th percentile model**: Worst-case Market Value
+                - **50th percentile model**: Typical Market Value  
+                - **95th percentile model**: Best-case Market Value
                 
                 **Features Used:**
                 - Floor level, building age, building area, lot area, waterfront proximity
