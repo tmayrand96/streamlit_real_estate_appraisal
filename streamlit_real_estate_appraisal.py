@@ -157,12 +157,19 @@ def train_quantile_models(csv_path):
             X_train, X_val, y_train, y_val = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
             gbr = GradientBoostingRegressor(loss="quantile", alpha=alpha, random_state=42)
             gbr.fit(X_train, y_train)
-            joblib.dump({"model": gbr, "scaler": scaler, "features": feature_cols}, path)
-            models[alpha] = gbr
+            
+            # Store model data
+            model_data = {"model": gbr, "scaler": scaler, "features": feature_cols}
+            
+            # For the median model (alpha=0.50), also store MAE
             if alpha == 0.50:
                 y_pred_val = gbr.predict(X_val)
                 metrics["R2"] = r2_score(y_val, y_pred_val)
                 metrics["MAE"] = mean_absolute_error(y_val, y_pred_val)
+                model_data["mae"] = metrics["MAE"]
+            
+            joblib.dump(model_data, path)
+            models[alpha] = gbr
 
     return metrics
 
@@ -188,6 +195,33 @@ def predict_with_models(etage, age, aire_batiment, aire_lot, prox_riverain):
         preds[alpha] = float(model.predict(X_scaled)[0])
 
     return preds[0.05], preds[0.50], preds[0.95]
+
+def get_model_mae():
+    """Get the MAE from the trained model"""
+    try:
+        # Load the median model to get the MAE
+        data = joblib.load(MODEL_Q50_PATH)
+        if "mae" in data:
+            return data["mae"]
+        else:
+            # If MAE is not stored in the model, compute it from the training data
+            df = pd.read_csv(DATA_PATH)
+            df = create_features(df, is_training=True)
+            df = df.dropna(subset=['Prix_de_vente'])
+            
+            feature_cols = ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"]
+            X = df[feature_cols].fillna(0)
+            y = df['Prix_de_vente']
+            
+            scaler = data["scaler"]
+            model = data["model"]
+            X_scaled = scaler.transform(X)
+            y_pred = model.predict(X_scaled)
+            
+            return mean_absolute_error(y, y_pred)
+    except Exception as e:
+        st.warning(f"Could not retrieve MAE: {e}")
+        return None
 
 def create_quantile_chart(low, median, high):
     """Create a beautiful chart showing the quantile predictions"""
@@ -334,10 +368,15 @@ def main():
                     # Make prediction
                     low, median, high = predict_with_models(etage, age, aire_batiment, aire_lot, prox_riverain)
                     
+                    # Get MAE for display
+                    mae = get_model_mae()
+                    
                     # Display results
                     st.markdown('<div class="prediction-card">', unsafe_allow_html=True)
                     st.markdown(f"## Estimated Property Value")
                     st.markdown(f"# ${median:,.0f}")
+                    if mae is not None:
+                        st.markdown(f"*MAE: ${mae:,.0f}*")
                     st.markdown(f"*Confidence Range: ${low:,.0f} - ${high:,.0f}*")
                     st.markdown("</div>", unsafe_allow_html=True)
                     
@@ -379,6 +418,12 @@ def main():
                     with col2:
                         confidence_range = high - low
                         st.metric("Confidence Range", f"${confidence_range:,.0f}")
+                    
+                    with col3:
+                        if mae is not None:
+                            st.metric("Mean Absolute Error", f"${mae:,.0f}", "Average prediction error")
+                        else:
+                            st.metric("Mean Absolute Error", "N/A", "Not available")
                     
 
                     
