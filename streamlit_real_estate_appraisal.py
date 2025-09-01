@@ -534,16 +534,16 @@ def main():
         - **Better Decision Making**: Range of possible values instead of single point
         
         ### Data Source:
-        The model is trained on real estate data from Statistics Canada.
+        The model is trained on real estate data from the Land Register of Quebec.
+        
+        ### Disclaimer
+        
+        This application does not replace the advice of a certified appraiser. However, it uses machine learning to predict the price of a property based on real property data. Statistical validity may vary from one model to another depending on the ML algorithm used.
         
         ---
         **Note**:  
         The model is evaluated internally using several statistical metrics (including R²), but these are kept under the hood.  
         What you see in the app are the confidence intervals and error metrics (such as MAE), which are the most relevant for decision-making.
-        
-        ### Disclaimer
-        
-        This application does not replace the advice of a certified appraiser. However, it uses machine learning to predict the price of a property based on real property data. Statistical validity may vary from one model to another depending on the ML algorithm used.
         """)
 
 if __name__ == "__main__":
