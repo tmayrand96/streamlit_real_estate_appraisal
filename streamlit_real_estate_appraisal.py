@@ -304,13 +304,11 @@ def main():
         ### Key Features:
         - **Quantile Regression**: Provides 5th, 50th, and 95th percentile predictions
         - **Confidence Intervals**: Understand the uncertainty in your valuations
-        - **Advanced Features**: Engineered features for better accuracy
-        - **Interactive Interface**: Beautiful, user-friendly web interface
+        - **Advanced Features**: Raw attributes for more relevant insights
         
         ### How to Use:
         1. **Train the Model**: Go to "Model Performance" to train the quantile models
         2. **Get Valuations**: Use "Property Valuation" for custom estimates
-        3. **View Examples**: Check "Demo Properties" for sample valuations
         """)
         
         # Check model status
@@ -333,7 +331,7 @@ def main():
             st.metric("Prediction Range", "5th - 95th percentile", "Confidence Intervals")
         
         with col3:
-            st.metric("Features", "5 Raw Attributes", "High Accuracy")
+            st.metric("Features", "5 Raw Attributes", "Raw attributes for more relevant insights")
     
     elif page == "Property Valuation":
         st.header("🏠 Property Valuation")
@@ -494,11 +492,9 @@ def main():
             try:
                 data = joblib.load(MODEL_Q50_PATH)
                 st.info("**Model Details:**")
-                st.write(f"- Features: {len(data['features'])} engineered features")
+                st.write(f"- Features: {len(data['features'])} raw attributes by valuation model")
                 st.write("- Algorithm: Gradient Boosting with Quantile Loss")
                 st.write("- Scaling: Robust Scaler")
-                
-                st.button("🔄 Retrain Models", type="secondary")
             except:
                 st.warning("Model files exist but may be corrupted. Please retrain.")
     
@@ -544,6 +540,10 @@ def main():
         **Note**:  
         The model is evaluated internally using several statistical metrics (including R²), but these are kept under the hood.  
         What you see in the app are the confidence intervals and error metrics (such as MAE), which are the most relevant for decision-making.
+        
+        ### Disclaimer
+        
+        This application does not replace the advice of a certified appraiser. However, it uses machine learning to predict the price of a property based on real property data. Statistical validity may vary from one model to another depending on the ML algorithm used.
         """)
 
 if __name__ == "__main__":
