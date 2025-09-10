@@ -286,7 +286,7 @@ def create_quantile_chart(low, median, high):
 def main():
     # Header
     st.markdown('<h1 class="main-header">🏠 Property Valuation System</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="text-align: center; font-size: 1.2rem; color: #666;">Advanced Quantile Regression for Accurate Property Valuations</p>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align: center; font-size: 1.2rem; color: #666;">Gradient Boosting with Quantile Loss for Accurate Property Valuations</p>', unsafe_allow_html=True)
     
     # Sidebar navigation
     st.sidebar.title("Navigation")
@@ -299,10 +299,10 @@ def main():
         st.markdown("""
         ## Welcome to the Advanced Property Valuation System
         
-        This system uses **quantile regression** to provide not just point estimates, but also confidence intervals for property valuations.
+        This system uses **Gradient Boosting with Quantile Loss** to provide not just point estimates, but also confidence intervals for property valuations.
         
         ### Key Features:
-        - **Quantile Regression**: Provides 5th, 50th, and 95th percentile predictions
+        - **Gradient Boosting with Quantile Loss**: Provides 5th, 50th, and 95th percentile predictions
         - **Confidence Intervals**: Understand the uncertainty in your valuations
         - **Advanced Features**: Raw attributes for more relevant insights
         
@@ -325,7 +325,7 @@ def main():
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.metric("Model Type", "Quantile Regression", "Advanced")
+            st.metric("Model Type", "Gradient Boosting with Quantile Loss", "Advanced")
         
         with col2:
             st.metric("Prediction Range", "5th - 95th percentile", "Confidence Intervals")
@@ -335,6 +335,8 @@ def main():
     
     elif page == "Property Valuation":
         st.header("🏠 Property Valuation")
+        # Note: Using "Gradient Boosting with Quantile Loss" instead of "Quantile Regression" 
+        # because quantile regression typically refers to linear methods, while this app uses GradientBoostingRegressor with quantile loss
         
         if not MODEL_Q50_PATH.exists():
             st.error("⚠️ Models need to be trained first. Please go to 'Model Performance' to train the models.")
@@ -377,6 +379,9 @@ def main():
                         st.markdown(f"*MAE: ${mae:,.0f}*")
                     st.markdown(f"*Confidence Range: ${low:,.0f} - ${high:,.0f}*")
                     st.markdown("</div>", unsafe_allow_html=True)
+                    
+                    # Add explanation about the model
+                    st.info("This model uses Gradient Boosting with Quantile Loss, a machine learning method that provides price predictions along with confidence ranges.")
                     
                     # Quantile breakdown
                     col1, col2, col3 = st.columns(3)
@@ -456,6 +461,8 @@ def main():
     
     elif page == "Model Performance":
         st.header("📈 Model Training & Performance")
+        # Note: Using "Gradient Boosting with Quantile Loss" instead of "Quantile Regression" 
+        # because quantile regression typically refers to linear methods, while this app uses GradientBoostingRegressor with quantile loss
         
         if st.button("🚀 Train Quantile Models", type="primary"):
             try:
@@ -471,7 +478,7 @@ def main():
                 # Model info
                 st.subheader("Model Information")
                 st.markdown("""
-                **Quantile Regression Models Trained:**
+                **Gradient Boosting with Quantile Loss Models Trained:**
                 - **5th percentile model**: Lower bound predictions
                 - **50th percentile model**: Median predictions  
                 - **95th percentile model**: Upper bound predictions
@@ -500,21 +507,23 @@ def main():
     
     elif page == "About":
         st.header("ℹ️ About")
+        # Note: Using "Gradient Boosting with Quantile Loss" instead of "Quantile Regression" 
+        # because quantile regression typically refers to linear methods, while this app uses GradientBoostingRegressor with quantile loss
         
         st.markdown("""
         ## Advanced Property Valuation System
         
-        This system uses **quantile regression** to provide comprehensive property valuations with confidence intervals.
+        This system uses **Gradient Boosting with Quantile Loss** to provide comprehensive property valuations with confidence intervals.
         
         ### Technology Stack:
         - **Python**: Core programming language
         - **Streamlit**: Web application framework
-        - **Scikit-learn**: Machine learning library with quantile regression
+        - **Scikit-learn**: Machine learning library with Gradient Boosting and quantile loss
         - **Plotly**: Interactive visualizations
         - **Pandas & NumPy**: Data manipulation
         
         ### Model Architecture:
-        The system uses **quantile regression** with Gradient Boosting:
+        The system uses **Gradient Boosting with Quantile Loss**:
         - **5th percentile model**: Lower bound predictions (conservative estimate)
         - **50th percentile model**: Median predictions (most likely value)
         - **95th percentile model**: Upper bound predictions (optimistic estimate)
@@ -527,7 +536,7 @@ def main():
         - Waterfront proximity (Yes/No)
         - Raw property attributes from the dataset
         
-        ### Advantages of Quantile Regression:
+        ### Advantages of Gradient Boosting with Quantile Loss:
         - **Uncertainty Quantification**: Provides confidence intervals
         - **Robust Predictions**: Less sensitive to outliers
         - **Risk Assessment**: Helps understand prediction uncertainty
