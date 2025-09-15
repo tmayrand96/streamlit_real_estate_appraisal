@@ -11,6 +11,7 @@ from sklearn.metrics import r2_score, mean_absolute_error
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import shap
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -281,6 +282,123 @@ def create_quantile_chart(low, median, high):
     
     return fig
 
+def compute_shap_values(etage, age, aire_batiment, aire_lot, prox_riverain):
+    """
+    Compute SHAP values for property prediction using the trained GradientBoostingRegressor model.
+    
+    SHAP (SHapley Additive exPlanations) values explain how each feature contributes to the prediction.
+    Each SHAP value represents the contribution of a feature to the final prediction in dollars.
+    
+    Args:
+        etage, age, aire_batiment, aire_lot, prox_riverain: Property features
+        
+    Returns:
+        dict: SHAP values for each feature with explanations
+    """
+    try:
+        # Load the median model (50th percentile) for SHAP analysis
+        data = joblib.load(MODEL_Q50_PATH)
+        model = data["model"]
+        scaler = data["scaler"]
+        features = data["features"]
+        
+        # Prepare input data
+        inputs = pd.DataFrame([{
+            "Etage": etage,
+            "Age": age,
+            "Aire_Batiment": aire_batiment,
+            "Aire_Lot": aire_lot,
+            "Prox_Riverain": prox_riverain
+        }])
+        inputs = create_features(inputs, is_training=False)
+        X_scaled = scaler.transform(inputs[features])
+        
+        # Create SHAP explainer for GradientBoostingRegressor
+        # Using TreeExplainer which is optimized for tree-based models like GradientBoostingRegressor
+        # TreeExplainer provides exact SHAP values for tree models, making it faster and more accurate
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_scaled)
+        
+        # Get feature names
+        feature_names = features
+        
+        # Create SHAP analysis results
+        shap_results = {}
+        
+        for i, feature in enumerate(feature_names):
+            shap_value = shap_values[0][i]  # First (and only) prediction
+            
+            # Create explanations based on feature type
+            if feature == "Aire_Batiment":
+                # Building area: show contribution per m²
+                contribution_per_m2 = shap_value / aire_batiment if aire_batiment > 0 else 0
+                shap_results[feature] = {
+                    "shap_value": shap_value,
+                    "description": f"Each extra 10 m² adds ~${contribution_per_m2 * 10:,.0f}",
+                    "label": "Building Efficiency"
+                }
+                
+            elif feature == "Age":
+                # Age: modern vs old comparison
+                modern_threshold = 20
+                if age < modern_threshold:
+                    shap_results[feature] = {
+                        "shap_value": shap_value,
+                        "description": f"Modern building (Age < {modern_threshold}) adds ${shap_value:,.0f}",
+                        "label": "Condition"
+                    }
+                else:
+                    shap_results[feature] = {
+                        "shap_value": shap_value,
+                        "description": f"Older building (Age ≥ {modern_threshold}) reduces value by ${abs(shap_value):,.0f}",
+                        "label": "Condition"
+                    }
+                    
+            elif feature == "Prox_Riverain":
+                # Waterfront proximity
+                if prox_riverain == 1:
+                    shap_results[feature] = {
+                        "shap_value": shap_value,
+                        "description": f"Waterfront location adds ${shap_value:,.0f}",
+                        "label": "Premium Location"
+                    }
+                else:
+                    shap_results[feature] = {
+                        "shap_value": shap_value,
+                        "description": f"Non-waterfront location: ${shap_value:,.0f} impact",
+                        "label": "Premium Location"
+                    }
+                    
+            elif feature == "Etage":
+                # Floor level
+                if etage > 1:
+                    shap_results[feature] = {
+                        "shap_value": shap_value,
+                        "description": f"Multi-floor ({etage} floors) adds ${shap_value:,.0f}",
+                        "label": "Floor Level"
+                    }
+                else:
+                    shap_results[feature] = {
+                        "shap_value": shap_value,
+                        "description": f"Single floor: ${shap_value:,.0f} impact",
+                        "label": "Floor Level"
+                    }
+                    
+            elif feature == "Aire_Lot":
+                # Lot area: show contribution per m²
+                contribution_per_m2 = shap_value / aire_lot if aire_lot > 0 else 0
+                shap_results[feature] = {
+                    "shap_value": shap_value,
+                    "description": f"Each extra 10 m² adds ~${contribution_per_m2 * 10:,.0f}",
+                    "label": "Lot Size"
+                }
+        
+        return shap_results
+        
+    except Exception as e:
+        st.warning(f"Could not compute SHAP values: {e}")
+        return None
+
 
 
 def main():
@@ -430,29 +548,53 @@ def main():
                     
 
                     
-                    # Property analysis
-                    st.subheader("Property Analysis")
+                    # SHAP-based Property Analysis
+                    st.subheader("Property Analysis (SHAP values)")
                     
-                    analysis_text = []
-                    analysis_text.append(f"**Building Efficiency**: {aire_batiment} m² of living space")
+                    # Compute SHAP values for this specific property
+                    # SHAP values explain how each feature contributes to the prediction in dollars
+                    # Positive values increase the predicted price, negative values decrease it
+                    shap_results = compute_shap_values(etage, age, aire_batiment, aire_lot, prox_riverain)
                     
-                    if age < 10:
-                        analysis_text.append("**Condition**: New building (excellent condition)")
-                    elif age < 30:
-                        analysis_text.append("**Condition**: Modern building (good condition)")
-                    elif age < 50:
-                        analysis_text.append("**Condition**: Standard building (fair condition)")
+                    if shap_results:
+                        st.info("💡 **SHAP Analysis**: Each value shows how much each feature contributes to the predicted price in dollars.")
+                        
+                        # Display SHAP values in organized sections
+                        shap_sections = {
+                            "Building Efficiency": ["Aire_Batiment"],
+                            "Condition": ["Age"],
+                            "Premium Location": ["Prox_Riverain"],
+                            "Floor Level": ["Etage"],
+                            "Lot Size": ["Aire_Lot"]
+                        }
+                        
+                        for section_name, features in shap_sections.items():
+                            st.markdown(f"#### {section_name}")
+                            
+                            for feature in features:
+                                if feature in shap_results:
+                                    result = shap_results[feature]
+                                    shap_val = result["shap_value"]
+                                    description = result["description"]
+                                    
+                                    # Color coding for positive/negative contributions
+                                    if shap_val >= 0:
+                                        color = "#2ca02c"  # Green for positive
+                                        icon = "📈"
+                                    else:
+                                        color = "#d62728"  # Red for negative
+                                        icon = "📉"
+                                    
+                                    col1, col2 = st.columns([1, 2])
+                                    with col1:
+                                        st.markdown(f"**{icon} ${shap_val:,.0f}**")
+                                    with col2:
+                                        st.markdown(f"*{description}*")
+                                    
+                                    # Add a small separator
+                                    st.markdown("---")
                     else:
-                        analysis_text.append("**Condition**: Older building (may need renovation)")
-                    
-                    if prox_riverain == 1:
-                        analysis_text.append("**Premium Location**: Waterfront property")
-                    
-                    analysis_text.append(f"**Floor Level**: {etage} floor(s)")
-                    analysis_text.append(f"**Lot Size**: {aire_lot} m² total area")
-                    
-                    for text in analysis_text:
-                        st.markdown(f"• {text}")
+                        st.warning("SHAP analysis could not be computed for this property.")
                     
                 except Exception as e:
                     st.error(f"An error occurred: {e}")
