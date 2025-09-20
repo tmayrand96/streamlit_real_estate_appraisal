@@ -282,6 +282,79 @@ def create_quantile_chart(low, median, high):
     
     return fig
 
+def find_nearest_neighbors_and_calculate_ratio(etage, age, aire_batiment, aire_lot, prox_riverain, predicted_value, k=3):
+    """
+    Find nearest neighbors in the dataset and calculate the ratio between predicted and actual prices.
+    
+    Args:
+        etage, age, aire_batiment, aire_lot, prox_riverain: Property features
+        predicted_value: The predicted value from the model
+        k: Number of nearest neighbors to consider (default=3)
+        
+    Returns:
+        dict: Contains ratio, actual_price, and whether averaging was used
+    """
+    try:
+        # Load the dataset
+        df = pd.read_csv(DATA_PATH)
+        df = create_features(df, is_training=True)
+        df = df.dropna(subset=['Prix_de_vente'])
+        
+        # Prepare input features for similarity search
+        # Note: We exclude 'Prix_de_vente' from the similarity search because we want to find
+        # properties with similar characteristics (explanatory variables) but use their actual
+        # sale prices as ground truth for comparison. This prevents data leakage where the
+        # target variable would influence the neighbor selection.
+        feature_cols = ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"]
+        
+        # Prepare input vector
+        input_vector = np.array([etage, age, aire_batiment, aire_lot, prox_riverain])
+        
+        # Check for exact match first
+        exact_match = df[
+            (df['Etage'] == etage) & 
+            (df['Age'] == age) & 
+            (df['Aire_Batiment'] == aire_batiment) & 
+            (df['Aire_Lot'] == aire_lot) & 
+            (df['Prox_Riverain'] == prox_riverain)
+        ]
+        
+        if len(exact_match) > 0:
+            # Use the first exact match
+            actual_price = exact_match['Prix_de_vente'].iloc[0]
+            used_averaging = False
+        else:
+            # Find k nearest neighbors using Euclidean distance
+            # We use only the explanatory variables for distance calculation
+            X_features = df[feature_cols].values
+            
+            # Calculate distances
+            distances = np.sqrt(np.sum((X_features - input_vector) ** 2, axis=1))
+            
+            # Get indices of k nearest neighbors
+            nearest_indices = np.argsort(distances)[:k]
+            
+            # Get actual prices of nearest neighbors
+            actual_prices = df.iloc[nearest_indices]['Prix_de_vente'].values
+            
+            # Use average of k nearest neighbors
+            actual_price = np.mean(actual_prices)
+            used_averaging = True
+        
+        # Calculate ratio
+        ratio = (predicted_value / actual_price) * 100
+        
+        return {
+            'ratio': ratio,
+            'actual_price': actual_price,
+            'used_averaging': used_averaging,
+            'k': k
+        }
+        
+    except Exception as e:
+        st.warning(f"Could not calculate ratio: {e}")
+        return None
+
 def compute_shap_values(etage, age, aire_batiment, aire_lot, prox_riverain):
     """
     Compute SHAP values for property prediction using the trained GradientBoostingRegressor model.
@@ -489,13 +562,17 @@ def main():
                     # Get MAE for display
                     mae = get_model_mae()
                     
+                    # Calculate ratio for KPI
+                    ratio_result = find_nearest_neighbors_and_calculate_ratio(
+                        etage, age, aire_batiment, aire_lot, prox_riverain, median
+                    )
+                    
                     # Display results
                     st.markdown('<div class="prediction-card">', unsafe_allow_html=True)
                     st.markdown(f"## Estimated Property Value")
                     st.markdown(f"# ${median:,.0f}")
                     if mae is not None:
                         st.markdown(f"*MAE: ${mae:,.0f}*")
-                    st.markdown(f"*Confidence Range: ${low:,.0f} - ${high:,.0f}*")
                     st.markdown("</div>", unsafe_allow_html=True)
                     
                     # Add explanation about the model
@@ -537,8 +614,13 @@ def main():
                         st.metric("Price per m²", f"${price_per_m2:,.0f}")
                     
                     with col2:
-                        confidence_range = high - low
-                        st.metric("Confidence Range", f"${confidence_range:,.0f}")
+                        if ratio_result:
+                            st.metric("Ratio Valuation vs Price", f"{ratio_result['ratio']:.2f}%")
+                            st.caption(f"Actual Price: ${ratio_result['actual_price']:,.0f}")
+                            if ratio_result['used_averaging']:
+                                st.caption(f"Average of {ratio_result['k']} similar properties")
+                        else:
+                            st.metric("Ratio Valuation vs Price", "N/A")
                     
                     with col3:
                         if mae is not None:
@@ -546,6 +628,9 @@ def main():
                         else:
                             st.metric("Mean Absolute Error", "N/A", "Not available")
                     
+                    # Add helper text for the ratio KPI
+                    if ratio_result:
+                        st.info("💡 **Ratio Valuation vs Price**: This ratio compares the model's valuation to the closest known property or an average of similar properties in the dataset. 100% = perfect match, >100% = overestimation, <100% = underestimation.")
 
                     
                     # SHAP-based Property Analysis
