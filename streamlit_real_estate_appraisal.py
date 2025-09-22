@@ -265,7 +265,8 @@ def create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_rivera
         
         # Get the base value (expected value) from the explainer
         # This represents the average prediction across the training dataset
-        base_value = explainer.expected_value
+        # Convert numpy scalar to Python float to avoid formatting issues
+        base_value = float(explainer.expected_value)
         
         # Prepare data for waterfall chart
         feature_names = features
@@ -285,14 +286,16 @@ def create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_rivera
         
         # Add each feature contribution
         for i, (feature, contribution) in enumerate(zip(feature_names, shap_contributions)):
-            cumulative_value += contribution
+            # Convert numpy contribution to Python float to avoid formatting issues
+            contribution_float = float(contribution)
+            cumulative_value += contribution_float
             
             # Color coding: green for positive contribution, red for negative
-            color = '#2ca02c' if contribution >= 0 else '#d62728'
+            color = '#2ca02c' if contribution_float >= 0 else '#d62728'
             
             waterfall_data.append({
                 'feature': feature,
-                'contribution': contribution,
+                'contribution': contribution_float,
                 'cumulative': cumulative_value,
                 'color': color
             })
@@ -312,30 +315,34 @@ def create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_rivera
         for i, data_point in enumerate(waterfall_data):
             if i == 0 or i == len(waterfall_data) - 1:
                 # Base value and final prediction - show as full bars
+                # Convert to float to ensure proper string formatting
+                cumulative_val = float(data_point['cumulative'])
                 fig.add_trace(go.Bar(
                     x=[data_point['feature']],
-                    y=[data_point['cumulative']],
+                    y=[cumulative_val],
                     marker_color=data_point['color'],
                     name=data_point['feature'],
-                    text=[f"${data_point['cumulative']:,.0f}"],
+                    text=[f"${cumulative_val:,.0f}"],
                     textposition='auto',
                     showlegend=False
                 ))
             else:
                 # Feature contributions - show as incremental bars
+                # Convert to float to ensure proper string formatting
+                contribution_val = float(data_point['contribution'])
                 fig.add_trace(go.Bar(
                     x=[data_point['feature']],
-                    y=[data_point['contribution']],
+                    y=[contribution_val],
                     marker_color=data_point['color'],
                     name=data_point['feature'],
-                    text=[f"${data_point['contribution']:,.0f}"],
+                    text=[f"${contribution_val:,.0f}"],
                     textposition='auto',
                     showlegend=False
                 ))
         
         # Add connecting lines to show the flow
         x_positions = list(range(len(waterfall_data)))
-        cumulative_values = [point['cumulative'] for point in waterfall_data]
+        cumulative_values = [float(point['cumulative']) for point in waterfall_data]
         
         fig.add_trace(go.Scatter(
             x=x_positions,
