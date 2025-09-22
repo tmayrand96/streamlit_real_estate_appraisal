@@ -224,63 +224,154 @@ def get_model_mae():
         st.warning(f"Could not retrieve MAE: {e}")
         return None
 
-def create_quantile_chart(low, median, high):
-    """Create a beautiful chart showing the quantile predictions"""
-    fig = go.Figure()
+def create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_riverain, predicted_value):
+    """
+    Create a SHAP waterfall chart showing how the predicted price is constructed.
     
-    # Add bar for median prediction
-    fig.add_trace(go.Bar(
-        x=['Median Prediction'],
-        y=[median],
-        name='Median (50th percentile)',
-        marker_color='#1f77b4',
-        width=0.6
-    ))
+    This function computes SHAP values for the current property and creates a waterfall chart
+    that shows how each feature contributes to the final prediction, starting from the base value
+    (average predicted price in the training dataset) and adding/subtracting contributions.
     
-    # Add error bars for quantile range
-    fig.add_trace(go.Scatter(
-        x=['Median Prediction'],
-        y=[high],
-        mode='markers',
-        name='Upper Bound (95th percentile)',
-        marker=dict(color='#ff7f0e', size=10, symbol='triangle-up'),
-        showlegend=True
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=['Median Prediction'],
-        y=[low],
-        mode='markers',
-        name='Lower Bound (5th percentile)',
-        marker=dict(color='#2ca02c', size=10, symbol='triangle-down'),
-        showlegend=True
-    ))
-    
-    # Add range line
-    fig.add_trace(go.Scatter(
-        x=['Median Prediction', 'Median Prediction'],
-        y=[low, high],
-        mode='lines',
-        name='Prediction Range',
-        line=dict(color='#d62728', width=3, dash='dash'),
-        showlegend=True
-    ))
-    
-    fig.update_layout(
-        title="Property Value Prediction with Confidence Intervals",
-        yaxis_title="Predicted Price ($)",
-        height=400,
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
+    Args:
+        etage, age, aire_batiment, aire_lot, prox_riverain: Property features
+        predicted_value: The final predicted value from the model
+        
+    Returns:
+        plotly.graph_objects.Figure: Waterfall chart showing price construction
+    """
+    try:
+        # Load the median model for SHAP analysis
+        data = joblib.load(MODEL_Q50_PATH)
+        model = data["model"]
+        scaler = data["scaler"]
+        features = data["features"]
+        
+        # Prepare input data
+        inputs = pd.DataFrame([{
+            "Etage": etage,
+            "Age": age,
+            "Aire_Batiment": aire_batiment,
+            "Aire_Lot": aire_lot,
+            "Prox_Riverain": prox_riverain
+        }])
+        inputs = create_features(inputs, is_training=False)
+        X_scaled = scaler.transform(inputs[features])
+        
+        # Compute SHAP values using TreeExplainer for GradientBoostingRegressor
+        # SHAP values represent the contribution of each feature to the prediction
+        # Positive values increase the predicted price, negative values decrease it
+        explainer = shap.TreeExplainer(model)
+        shap_values = explainer.shap_values(X_scaled)
+        
+        # Get the base value (expected value) from the explainer
+        # This represents the average prediction across the training dataset
+        base_value = explainer.expected_value
+        
+        # Prepare data for waterfall chart
+        feature_names = features
+        shap_contributions = shap_values[0]  # First (and only) prediction
+        
+        # Create waterfall data
+        waterfall_data = []
+        cumulative_value = base_value
+        
+        # Add base value
+        waterfall_data.append({
+            'feature': 'Base Value',
+            'contribution': 0,
+            'cumulative': base_value,
+            'color': '#1f77b4'  # Blue for base value
+        })
+        
+        # Add each feature contribution
+        for i, (feature, contribution) in enumerate(zip(feature_names, shap_contributions)):
+            cumulative_value += contribution
+            
+            # Color coding: green for positive contribution, red for negative
+            color = '#2ca02c' if contribution >= 0 else '#d62728'
+            
+            waterfall_data.append({
+                'feature': feature,
+                'contribution': contribution,
+                'cumulative': cumulative_value,
+                'color': color
+            })
+        
+        # Add final value
+        waterfall_data.append({
+            'feature': 'Final Prediction',
+            'contribution': 0,
+            'cumulative': predicted_value,
+            'color': '#1f77b4'  # Blue for final value
+        })
+        
+        # Create the waterfall chart using Plotly
+        fig = go.Figure()
+        
+        # Add bars for each step
+        for i, data_point in enumerate(waterfall_data):
+            if i == 0 or i == len(waterfall_data) - 1:
+                # Base value and final prediction - show as full bars
+                fig.add_trace(go.Bar(
+                    x=[data_point['feature']],
+                    y=[data_point['cumulative']],
+                    marker_color=data_point['color'],
+                    name=data_point['feature'],
+                    text=[f"${data_point['cumulative']:,.0f}"],
+                    textposition='auto',
+                    showlegend=False
+                ))
+            else:
+                # Feature contributions - show as incremental bars
+                fig.add_trace(go.Bar(
+                    x=[data_point['feature']],
+                    y=[data_point['contribution']],
+                    marker_color=data_point['color'],
+                    name=data_point['feature'],
+                    text=[f"${data_point['contribution']:,.0f}"],
+                    textposition='auto',
+                    showlegend=False
+                ))
+        
+        # Add connecting lines to show the flow
+        x_positions = list(range(len(waterfall_data)))
+        cumulative_values = [point['cumulative'] for point in waterfall_data]
+        
+        fig.add_trace(go.Scatter(
+            x=x_positions,
+            y=cumulative_values,
+            mode='lines+markers',
+            line=dict(color='#666666', width=2, dash='dot'),
+            marker=dict(size=6, color='#666666'),
+            name='Flow',
+            showlegend=False,
+            hoverinfo='skip'
+        ))
+        
+        # Update layout
+        fig.update_layout(
+            title="Price Construction (SHAP Waterfall)",
+            xaxis_title="Features",
+            yaxis_title="Price ($)",
+            height=500,
+            showlegend=False,
+            xaxis=dict(
+                tickangle=45,
+                tickmode='array',
+                tickvals=list(range(len(waterfall_data))),
+                ticktext=[point['feature'] for point in waterfall_data]
+            ),
+            yaxis=dict(
+                tickformat='$,.0f'
+            ),
+            margin=dict(b=100)  # Add bottom margin for rotated labels
         )
-    )
-    
-    return fig
+        
+        return fig
+        
+    except Exception as e:
+        st.warning(f"Could not create SHAP waterfall chart: {e}")
+        return None
 
 def find_nearest_neighbors_and_calculate_ratio(etage, age, aire_batiment, aire_lot, prox_riverain, predicted_value, k=3):
     """
@@ -602,9 +693,14 @@ def main():
                         st.markdown("*95th percentile*")
                         st.markdown("</div>", unsafe_allow_html=True)
                     
-                    # Chart
-                    fig = create_quantile_chart(low, median, high)
-                    st.plotly_chart(fig, use_container_width=True)
+                    # SHAP Waterfall Chart
+                    st.subheader("Price Construction (SHAP Waterfall)")
+                    fig = create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_riverain, median)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                        st.info("💡 **Price Construction**: This chart starts from the dataset's average property value and shows how each attribute contributes positively or negatively to the final predicted price.")
+                    else:
+                        st.warning("Could not generate the price construction chart.")
                     
                     # Additional metrics
                     col1, col2, col3 = st.columns(3)
