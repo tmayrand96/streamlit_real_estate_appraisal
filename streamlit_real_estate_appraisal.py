@@ -113,6 +113,88 @@ st.markdown("""
         transform: translateY(-2px);
         transition: all 0.3s ease;
     }
+    /* Compact SHAP analysis styles with theme-consistent colors */
+    .shap-card-grid {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        padding-bottom: 0.25rem;
+        margin: 0.25rem 0 0.5rem 0;
+    }
+    .shap-card {
+        border-radius: 0.5rem;
+        padding: 0.5rem 0.75rem;
+        min-width: 220px;
+        box-shadow: none;
+        border: 1px solid transparent;
+        transition: all 0.2s ease;
+    }
+    .shap-card h5 {
+        margin: 0 0 0.25rem 0;
+        font-size: 0.9rem;
+        color: #334155;
+        font-weight: 600;
+    }
+    .shap-card .value {
+        font-weight: 600;
+        font-size: 1rem;
+        margin: 0 0 0.25rem 0;
+    }
+    .shap-card .desc {
+        font-size: 0.85rem;
+        color: #4b5563;
+        margin: 0;
+    }
+    
+    /* Theme-consistent color palette for SHAP cards */
+    .shap-card.building-efficiency {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+    .shap-card.building-efficiency h5 { color: #f0f2f6; }
+    .shap-card.building-efficiency .desc { color: #e8f4fd; }
+    .shap-card.building-efficiency.positive .value { color: #ffffff; }
+    .shap-card.building-efficiency.negative .value { color: #ffebee; }
+    
+    .shap-card.condition {
+        background: linear-gradient(135deg, #1f77b4 0%, #4a90e2 100%);
+        color: white;
+    }
+    .shap-card.condition h5 { color: #f0f2f6; }
+    .shap-card.condition .desc { color: #e8f4fd; }
+    .shap-card.condition.positive .value { color: #ffffff; }
+    .shap-card.condition.negative .value { color: #ffebee; }
+    
+    .shap-card.premium-location {
+        background: linear-gradient(135deg, #5a6fd8 0%, #8b5cf6 100%);
+        color: white;
+    }
+    .shap-card.premium-location h5 { color: #f0f2f6; }
+    .shap-card.premium-location .desc { color: #e8f4fd; }
+    .shap-card.premium-location.positive .value { color: #ffffff; }
+    .shap-card.premium-location.negative .value { color: #ffebee; }
+    
+    .shap-card.floor-level {
+        background: linear-gradient(135deg, #64748b 0%, #94a3b8 100%);
+        color: white;
+    }
+    .shap-card.floor-level h5 { color: #f0f2f6; }
+    .shap-card.floor-level .desc { color: #e8f4fd; }
+    .shap-card.floor-level.positive .value { color: #ffffff; }
+    .shap-card.floor-level.negative .value { color: #ffebee; }
+    
+    .shap-card.lot-size {
+        background: linear-gradient(135deg, #6b7280 0%, #9ca3af 100%);
+        color: white;
+    }
+    .shap-card.lot-size h5 { color: #f0f2f6; }
+    .shap-card.lot-size .desc { color: #e8f4fd; }
+    .shap-card.lot-size.positive .value { color: #ffffff; }
+    .shap-card.lot-size.negative .value { color: #ffebee; }
+    
+    .compact-info { margin: 0.25rem 0; font-size: 0.85rem; }
+    .scroll-x { overflow-x: auto; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -745,9 +827,9 @@ def main():
                     shap_results = compute_shap_values(etage, age, aire_batiment, aire_lot, prox_riverain)
                     
                     if shap_results:
-                        st.info("💡 **SHAP Analysis**: Each value shows how much each feature contributes to the predicted price in dollars.")
-                        
-                        # Display SHAP values in organized sections
+                        st.markdown('<div class="compact-info">💡 <strong>SHAP Analysis</strong>: Each value shows how much each feature contributes to the predicted price in dollars.</div>', unsafe_allow_html=True)
+
+                        # Maintain logical grouping but render as compact horizontal cards
                         shap_sections = {
                             "Building Efficiency": ["Aire_Batiment"],
                             "Condition": ["Age"],
@@ -755,32 +837,40 @@ def main():
                             "Floor Level": ["Etage"],
                             "Lot Size": ["Aire_Lot"]
                         }
-                        
+
+                        cards_html_parts = []
                         for section_name, features in shap_sections.items():
-                            st.markdown(f"#### {section_name}")
-                            
                             for feature in features:
                                 if feature in shap_results:
                                     result = shap_results[feature]
-                                    shap_val = result["shap_value"]
-                                    description = result["description"]
+                                    shap_val = float(result["shap_value"]) if hasattr(result["shap_value"], "__float__") else result["shap_value"]
+                                    desc = result["description"]
+                                    label = result.get("label", feature)
+                                    is_positive = shap_val >= 0
+                                    icon = "📈" if is_positive else "📉"
+                                    sign_class = "positive" if is_positive else "negative"
                                     
-                                    # Color coding for positive/negative contributions
-                                    if shap_val >= 0:
-                                        color = "#2ca02c"  # Green for positive
-                                        icon = "📈"
-                                    else:
-                                        color = "#d62728"  # Red for negative
-                                        icon = "📉"
+                                    # Map section names to theme-consistent CSS classes
+                                    section_class_map = {
+                                        "Building Efficiency": "building-efficiency",
+                                        "Condition": "condition", 
+                                        "Premium Location": "premium-location",
+                                        "Floor Level": "floor-level",
+                                        "Lot Size": "lot-size"
+                                    }
+                                    theme_class = section_class_map.get(section_name, "building-efficiency")
                                     
-                                    col1, col2 = st.columns([1, 2])
-                                    with col1:
-                                        st.markdown(f"**{icon} ${shap_val:,.0f}**")
-                                    with col2:
-                                        st.markdown(f"*{description}*")
-                                    
-                                    # Add a small separator
-                                    st.markdown("---")
+                                    cards_html_parts.append(
+                                        f"<div class='shap-card {theme_class} {sign_class}'>"
+                                        f"<h5>{label}</h5>"
+                                        f"<div class='value'>{icon} ${shap_val:,.0f}</div>"
+                                        f"<p class='desc'>{desc}</p>"
+                                        f"</div>"
+                                    )
+
+                        if cards_html_parts:
+                            cards_html = "".join(cards_html_parts)
+                            st.markdown(f"<div class='shap-card-grid'>{cards_html}</div>", unsafe_allow_html=True)
                     else:
                         st.warning("SHAP analysis could not be computed for this property.")
                     
