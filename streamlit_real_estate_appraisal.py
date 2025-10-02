@@ -1,11 +1,14 @@
-# Streamlit Property Valuation App with Quantile Regression
+# Streamlit Property Valuation App with Multi-Region Quantile Regression
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
 from pathlib import Path
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import RobustScaler, OneHotEncoder
+from sklearn.impute import SimpleImputer
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import r2_score, mean_absolute_error
 import plotly.express as px
@@ -19,25 +22,51 @@ warnings.filterwarnings('ignore')
 # Base directory of the current script
 BASE_DIR = Path(__file__).parent
 
-# Paths to dataset and quantile models
-DATA_PATH = BASE_DIR / "donnees_BDF.csv"
-MODEL_Q05_PATH = BASE_DIR / "property_model_q05.joblib"
-MODEL_Q50_PATH = BASE_DIR / "property_model_q50.joblib"
-MODEL_Q95_PATH = BASE_DIR / "property_model_q95.joblib"
+# Multi-region configuration
+REGION_CONFIG = {
+    "BDF": {
+        "name": "Bois-Des-Filion",
+        "data_path": BASE_DIR / "donnees_BDF.csv",
+        "feature_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"],
+        "num_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot"],
+        "cat_cols": [],
+        "model_prefix": "bdf"
+    },
+    "PMR": {
+        "name": "Plateau Mont-Royal",
+        "data_path": BASE_DIR / "Dataset_PMR.csv",
+        "feature_cols": ["Category", "Etage", "Age", "Aire_Batiment", "Taxes_annuelles", "Near_A_Park", "Near_Metro_Station"],
+        "num_cols": ["Etage", "Age", "Aire_Batiment", "Taxes_annuelles"],
+        "cat_cols": ["Category", "Near_A_Park", "Near_Metro_Station"],
+        "model_prefix": "pmr"
+    },
+    "Ste-Rose": {
+        "name": "Sainte-Rose",
+        "data_path": BASE_DIR / "Dataset_Ste-Rose.csv",
+        "feature_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"],
+        "num_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot"],
+        "cat_cols": [],
+        "model_prefix": "ste_rose"
+    }
+}
 
-# Load dataset
-try:
-    df = pd.read_csv(DATA_PATH)
-except FileNotFoundError:
-    st.error(f"Dataset introuvable : {DATA_PATH}")
+# Create models directory if it doesn't exist
+MODELS_DIR = BASE_DIR / "models"
+MODELS_DIR.mkdir(exist_ok=True)
 
-# Load quantile models
+def model_path_for(region_key, alpha):
+    """Get model path for a specific region and quantile"""
+    prefix = REGION_CONFIG[region_key]["model_prefix"]
+    q = {0.05: "q05", 0.5: "q50", 0.95: "q95"}[alpha]
+    return MODELS_DIR / f"{prefix}_model_{q}.joblib"
+
+# Legacy compatibility - load BDF models if they exist
 try:
-    model_q05 = joblib.load(MODEL_Q05_PATH)
-    model_q50 = joblib.load(MODEL_Q50_PATH)
-    model_q95 = joblib.load(MODEL_Q95_PATH)
-except FileNotFoundError as e:
-    st.error(f"Model introuvable : {e.filename}")
+    if (BASE_DIR / "property_model_q05.joblib").exists():
+        # Migrate old models to new structure if needed
+        pass
+except:
+    pass
 
 
 # Page configuration
@@ -199,233 +228,309 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------- FONCTIONS ----------------
-def create_features(df, is_training=True):
-    """Prepare raw data features"""
+def create_features(df, region_key="BDF", is_training=True):
+    """Prepare raw data features for a specific region"""
     df = df.copy()
     
-    # Ensure all required columns exist
-    required_cols = ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"]
-    for col in required_cols:
+    # Get region configuration
+    config = REGION_CONFIG[region_key]
+    feature_cols = config["feature_cols"]
+    num_cols = config["num_cols"]
+    cat_cols = config["cat_cols"]
+    
+    # Auto-detect available columns and adapt feature_cols if needed
+    available_cols = set(df.columns)
+    adapted_feature_cols = [col for col in feature_cols if col in available_cols]
+    
+    if len(adapted_feature_cols) != len(feature_cols):
+        st.warning(f"Some expected columns missing for {region_key}. Using available: {adapted_feature_cols}")
+    
+    # Ensure all required columns exist with sensible defaults
+    for col in adapted_feature_cols:
         if col not in df.columns:
-            df[col] = 0
+            if col in num_cols:
+                df[col] = 0  # Default numeric value
+            elif col in cat_cols:
+                df[col] = "__missing__"  # Default categorical value
+            else:
+                df[col] = 0  # Default fallback
+    
+    # Handle PMR-specific boolean conversions
+    if region_key == "PMR":
+        # Convert boolean text columns to 0/1 if needed
+        for col in ["Near_A_Park", "Near_Metro_Station"]:
+            if col in df.columns:
+                if df[col].dtype == 'object':
+                    df[col] = df[col].map({'Yes': 1, 'No': 0, 'True': 1, 'False': 0, True: 1, False: 0}).fillna(0)
     
     if not is_training:
         df = df.fillna(0)
     
-    return df
+    # Return only the features needed by this region
+    return df[adapted_feature_cols]
 
-def train_quantile_models(csv_path):
-    """Train quantile regression models"""
+def train_quantile_models(region_key="BDF"):
+    """Train quantile regression models for a specific region using sklearn Pipeline"""
+    config = REGION_CONFIG[region_key]
+    csv_path = config["data_path"]
+    
     if not csv_path.exists():
         raise FileNotFoundError(f"Dataset introuvable : {csv_path}")
     
-    with st.spinner("Loading and preparing data..."):
+    with st.spinner(f"Loading and preparing data for {config['name']}..."):
         df = pd.read_csv(csv_path)
-        df = create_features(df, is_training=True)
+        df = create_features(df, region_key, is_training=True)
         df = df.dropna(subset=['Prix_de_vente'])
 
-    feature_cols = ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"]
-    X = df[feature_cols].fillna(0)
+        # Small data safeguards
+        n_samples = len(df)
+        if n_samples < 100:
+            st.warning(f"⚠️ Small dataset detected ({n_samples} samples). Results may be less reliable.")
+        if n_samples < 50:
+            st.error(f"❌ Dataset too small ({n_samples} samples). Consider collecting more data.")
+
+    # Get adapted feature columns
+    feature_cols = list(df.columns)
+    feature_cols = [col for col in feature_cols if col != 'Prix_de_vente']
+    
+    X = df[feature_cols]
     y = df['Prix_de_vente']
 
-    scaler = RobustScaler()
-    X_scaled = scaler.fit_transform(X)
+    # Build preprocessing pipeline
+    num_cols = [col for col in config["num_cols"] if col in feature_cols]
+    cat_cols = [col for col in config["cat_cols"] if col in feature_cols]
+    
+    # Create transformers
+    numeric_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', RobustScaler())
+    ])
+    
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='constant', fill_value='__missing__')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore', drop='first'))
+    ])
+    
+    # Create preprocessor
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numeric_transformer, num_cols),
+            ('cat', categorical_transformer, cat_cols)
+        ],
+        remainder='drop'
+    )
 
     metrics = {}
-    models = {}
     
     with st.spinner("Training quantile models..."):
-        for alpha, path in zip([0.05, 0.50, 0.95],
-                               [MODEL_Q05_PATH, MODEL_Q50_PATH, MODEL_Q95_PATH]):
-            X_train, X_val, y_train, y_val = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
-            gbr = GradientBoostingRegressor(loss="quantile", alpha=alpha, random_state=42)
-            gbr.fit(X_train, y_train)
+        for alpha in [0.05, 0.50, 0.95]:
+            # Create full pipeline
+            pipe = Pipeline([
+                ('preproc', preprocessor),
+                ('model', GradientBoostingRegressor(loss="quantile", alpha=alpha, random_state=42))
+            ])
+            
+            # Train-test split
+            X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+            
+            # Train pipeline
+            pipe.fit(X_train, y_train)
             
             # Store model data
-            model_data = {"model": gbr, "scaler": scaler, "features": feature_cols}
+            model_data = {
+                "pipeline": pipe,
+                "features": feature_cols,
+                "region": region_key,
+                "num_cols": num_cols,
+                "cat_cols": cat_cols
+            }
             
             # For the median model (alpha=0.50), also store MAE
             if alpha == 0.50:
-                y_pred_val = gbr.predict(X_val)
+                y_pred_val = pipe.predict(X_val)
                 metrics["R2"] = r2_score(y_val, y_pred_val)
                 metrics["MAE"] = mean_absolute_error(y_val, y_pred_val)
                 model_data["mae"] = metrics["MAE"]
             
+            # Save pipeline
+            path = model_path_for(region_key, alpha)
             joblib.dump(model_data, path)
-            models[alpha] = gbr
 
     return metrics
 
-def predict_with_models(etage, age, aire_batiment, aire_lot, prox_riverain):
-    """Make predictions using all three quantile models"""
-    inputs = pd.DataFrame([{
-        "Etage": etage,
-        "Age": age,
-        "Aire_Batiment": aire_batiment,
-        "Aire_Lot": aire_lot,
-        "Prox_Riverain": prox_riverain
-    }])
-    inputs = create_features(inputs, is_training=False)
+def predict_with_models(region_key="BDF", **kwargs):
+    """Make predictions using all three quantile models for a specific region"""
+    # Prepare inputs based on region
+    config = REGION_CONFIG[region_key]
+    feature_cols = config["feature_cols"]
+    
+    # Create input DataFrame with all possible features
+    inputs_dict = {}
+    for col in feature_cols:
+        if col in kwargs:
+            inputs_dict[col] = kwargs[col]
+        else:
+            # Default values for missing features
+            if col in config["num_cols"]:
+                inputs_dict[col] = 0
+            elif col in config["cat_cols"]:
+                inputs_dict[col] = "__missing__"
+            else:
+                inputs_dict[col] = 0
+    
+    inputs = pd.DataFrame([inputs_dict])
+    inputs = create_features(inputs, region_key, is_training=False)
 
     preds = {}
-    for alpha, path in zip([0.05, 0.50, 0.95],
-                           [MODEL_Q05_PATH, MODEL_Q50_PATH, MODEL_Q95_PATH]):
-        data = joblib.load(path)
-        scaler = data["scaler"]
-        features = data["features"]
-        model = data["model"]
-        X_scaled = scaler.transform(inputs[features])
-        preds[alpha] = float(model.predict(X_scaled)[0])
+    for alpha in [0.05, 0.50, 0.95]:
+        path = model_path_for(region_key, alpha)
+        try:
+            data = joblib.load(path)
+            pipe = data["pipeline"]
+            preds[alpha] = float(pipe.predict(inputs)[0])
+        except FileNotFoundError:
+            st.error(f"Model not found for {region_key} quantile {alpha}. Please train models first.")
+            return None, None, None
 
     return preds[0.05], preds[0.50], preds[0.95]
 
-def get_model_mae():
-    """Get the MAE from the trained model"""
+def get_model_mae(region_key="BDF"):
+    """Get the MAE from the trained model for a specific region"""
     try:
         # Load the median model to get the MAE
-        data = joblib.load(MODEL_Q50_PATH)
+        path = model_path_for(region_key, 0.5)
+        data = joblib.load(path)
+        
         if "mae" in data:
             return data["mae"]
         else:
             # If MAE is not stored in the model, compute it from the training data
-            df = pd.read_csv(DATA_PATH)
-            df = create_features(df, is_training=True)
+            config = REGION_CONFIG[region_key]
+            df = pd.read_csv(config["data_path"])
+            df = create_features(df, region_key, is_training=True)
             df = df.dropna(subset=['Prix_de_vente'])
             
-            feature_cols = ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"]
-            X = df[feature_cols].fillna(0)
+            feature_cols = data["features"]
+            X = df[feature_cols]
             y = df['Prix_de_vente']
             
-            scaler = data["scaler"]
-            model = data["model"]
-            X_scaled = scaler.transform(X)
-            y_pred = model.predict(X_scaled)
+            pipe = data["pipeline"]
+            y_pred = pipe.predict(X)
             
             return mean_absolute_error(y, y_pred)
     except Exception as e:
-        st.warning(f"Could not retrieve MAE: {e}")
+        st.warning(f"Could not retrieve MAE for {region_key}: {e}")
         return None
 
-def create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_riverain, predicted_value):
+def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs):
     """
     Create a SHAP waterfall chart showing how the predicted price is constructed.
-    
-    This function computes SHAP values for the current property and creates a waterfall chart
-    that shows how each feature contributes to the final prediction, starting from the base value
-    (average predicted price in the training dataset) and adding/subtracting contributions.
-    
-    Args:
-        etage, age, aire_batiment, aire_lot, prox_riverain: Property features
-        predicted_value: The final predicted value from the model
-        
-    Returns:
-        plotly.graph_objects.Figure: Waterfall chart showing price construction
     """
     try:
-        # Load the median model for SHAP analysis
-        data = joblib.load(MODEL_Q50_PATH)
-        model = data["model"]
-        scaler = data["scaler"]
+        # Load the median model (q50)
+        path = model_path_for(region_key, 0.5)
+        data = joblib.load(path)
+        pipe = data["pipeline"]
         features = data["features"]
-        
-        # Prepare input data
-        inputs = pd.DataFrame([{
-            "Etage": etage,
-            "Age": age,
-            "Aire_Batiment": aire_batiment,
-            "Aire_Lot": aire_lot,
-            "Prox_Riverain": prox_riverain
-        }])
-        inputs = create_features(inputs, is_training=False)
-        X_scaled = scaler.transform(inputs[features])
-        
-        # Compute SHAP values using TreeExplainer for GradientBoostingRegressor
-        # SHAP values represent the contribution of each feature to the prediction
-        # Positive values increase the predicted price, negative values decrease it
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_scaled)
-        
-        # Get the base value (expected value) from the explainer
-        # This represents the average prediction across the training dataset
-        # Convert numpy scalar to Python float to avoid formatting issues
+
+        # Prepare single-row input as used by the model
+        config = REGION_CONFIG[region_key]
+        inputs_dict = {}
+        for col in config["feature_cols"]:
+            if col in kwargs:
+                inputs_dict[col] = kwargs[col]
+            else:
+                if col in config["num_cols"]:
+                    inputs_dict[col] = 0
+                elif col in config["cat_cols"]:
+                    inputs_dict[col] = "__missing__"
+                else:
+                    inputs_dict[col] = 0
+
+        inputs = pd.DataFrame([inputs_dict])
+        inputs = create_features(inputs, region_key, is_training=False)
+
+        # Transform input and sample a background set in model's feature space
+        X_transformed = pipe.named_steps["preproc"].transform(inputs)
+
+        df_bg = pd.read_csv(config["data_path"])
+        df_bg = create_features(df_bg, region_key, is_training=True).dropna(subset=['Prix_de_vente'])
+        background_sample = df_bg[features].sample(min(100, len(df_bg)), random_state=42)
+        X_background = pipe.named_steps["preproc"].transform(background_sample)
+
+        # SHAP for GradientBoostingRegressor
+        model = pipe.named_steps["model"]
+        explainer = shap.TreeExplainer(model, data=X_background)
+        shap_values = explainer.shap_values(X_transformed)  # shape: (1, n_features)
         base_value = float(explainer.expected_value)
-        
-        # Prepare data for waterfall chart
+
+        # Build waterfall data
         feature_names = features
-        shap_contributions = shap_values[0]  # First (and only) prediction
-        
-        # Create waterfall data
+        shap_contributions = shap_values[0]  # (n_features,)
         waterfall_data = []
         cumulative_value = base_value
-        
-        # Add base value
+
+        # Base
         waterfall_data.append({
             'feature': 'Base Value',
-            'contribution': 0,
+            'contribution': 0.0,
             'cumulative': base_value,
-            'color': '#1f77b4'  # Blue for base value
+            'color': '#1f77b4'
         })
-        
-        # Add each feature contribution
-        for i, (feature, contribution) in enumerate(zip(feature_names, shap_contributions)):
-            # Convert numpy contribution to Python float to avoid formatting issues
-            contribution_float = float(contribution)
-            cumulative_value += contribution_float
-            
-            # Color coding: green for positive contribution, red for negative
-            color = '#2ca02c' if contribution_float >= 0 else '#d62728'
-            
+
+        # Contributions
+        for feature, contribution in zip(feature_names, shap_contributions):
+            c = float(contribution)
+            cumulative_value += c
+            color = '#2ca02c' if c >= 0 else '#d62728'
             waterfall_data.append({
                 'feature': feature,
-                'contribution': contribution_float,
+                'contribution': c,
                 'cumulative': cumulative_value,
                 'color': color
             })
-        
-        # Add final value
+
+        # Final prediction
+        final_val = float(predicted_value) if predicted_value is not None else cumulative_value
         waterfall_data.append({
             'feature': 'Final Prediction',
-            'contribution': 0,
-            'cumulative': predicted_value,
-            'color': '#1f77b4'  # Blue for final value
+            'contribution': 0.0,
+            'cumulative': final_val,
+            'color': '#1f77b4'
         })
-        
-        # Create the waterfall chart using Plotly
+
+        # Plotly figure
         fig = go.Figure()
-        
-        # Add bars for each step
-        for i, data_point in enumerate(waterfall_data):
+
+        for i, point in enumerate(waterfall_data):
             if i == 0 or i == len(waterfall_data) - 1:
-                # Base value and final prediction - show as full bars
-                # Convert to float to ensure proper string formatting
-                cumulative_val = float(data_point['cumulative'])
+                # Base and Final as absolute bars
+                cumulative_val = float(point['cumulative'])
                 fig.add_trace(go.Bar(
-                    x=[data_point['feature']],
+                    x=[point['feature']],
                     y=[cumulative_val],
-                    marker_color=data_point['color'],
-                    name=data_point['feature'],
+                    marker_color=point['color'],
+                    name=point['feature'],
                     text=[f"${cumulative_val:,.0f}"],
                     textposition='auto',
                     showlegend=False
                 ))
             else:
-                # Feature contributions - show as incremental bars
-                # Convert to float to ensure proper string formatting
-                contribution_val = float(data_point['contribution'])
+                # Contributions as delta bars
+                contribution_val = float(point['contribution'])
                 fig.add_trace(go.Bar(
-                    x=[data_point['feature']],
+                    x=[point['feature']],
                     y=[contribution_val],
-                    marker_color=data_point['color'],
-                    name=data_point['feature'],
+                    marker_color=point['color'],
+                    name=point['feature'],
                     text=[f"${contribution_val:,.0f}"],
                     textposition='auto',
                     showlegend=False
                 ))
-        
-        # Add connecting lines to show the flow
+
+        # Flow line
         x_positions = list(range(len(waterfall_data)))
-        cumulative_values = [float(point['cumulative']) for point in waterfall_data]
-        
+        cumulative_values = [float(pt['cumulative']) for pt in waterfall_data]
         fig.add_trace(go.Scatter(
             x=x_positions,
             y=cumulative_values,
@@ -436,8 +541,7 @@ def create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_rivera
             showlegend=False,
             hoverinfo='skip'
         ))
-        
-        # Update layout
+
         fig.update_layout(
             title="Price Construction (SHAP Waterfall)",
             xaxis_title="Features",
@@ -448,68 +552,83 @@ def create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_rivera
                 tickangle=45,
                 tickmode='array',
                 tickvals=list(range(len(waterfall_data))),
-                ticktext=[point['feature'] for point in waterfall_data]
+                ticktext=[pt['feature'] for pt in waterfall_data]
             ),
-            yaxis=dict(
-                tickformat='$,.0f'
-            ),
-            margin=dict(b=100)  # Add bottom margin for rotated labels
+            yaxis=dict(tickformat='$,.0f'),
+            margin=dict(b=100)
         )
-        
         return fig
-        
+
     except Exception as e:
         st.warning(f"Could not create SHAP waterfall chart: {e}")
         return None
 
-def find_nearest_neighbors_and_calculate_ratio(etage, age, aire_batiment, aire_lot, prox_riverain, predicted_value, k=3):
+
+def find_nearest_neighbors_and_calculate_ratio(region_key="BDF", predicted_value=None, k=3, **kwargs):
     """
     Find nearest neighbors in the dataset and calculate the ratio between predicted and actual prices.
     
     Args:
-        etage, age, aire_batiment, aire_lot, prox_riverain: Property features
+        region_key: Region identifier
         predicted_value: The predicted value from the model
         k: Number of nearest neighbors to consider (default=3)
+        **kwargs: Property features
         
     Returns:
         dict: Contains ratio, actual_price, and whether averaging was used
     """
     try:
         # Load the dataset
-        df = pd.read_csv(DATA_PATH)
-        df = create_features(df, is_training=True)
+        config = REGION_CONFIG[region_key]
+        df = pd.read_csv(config["data_path"])
+        df = create_features(df, region_key, is_training=True)
         df = df.dropna(subset=['Prix_de_vente'])
         
-        # Prepare input features for similarity search
-        # Note: We exclude 'Prix_de_vente' from the similarity search because we want to find
-        # properties with similar characteristics (explanatory variables) but use their actual
-        # sale prices as ground truth for comparison. This prevents data leakage where the
-        # target variable would influence the neighbor selection.
-        feature_cols = ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"]
+        # Small data safeguards
+        n_samples = len(df)
+        k = min(k, n_samples - 1)  # Ensure k doesn't exceed available samples
         
-        # Prepare input vector
-        input_vector = np.array([etage, age, aire_batiment, aire_lot, prox_riverain])
+        # Load the pipeline for preprocessing
+        path = model_path_for(region_key, 0.5)
+        data = joblib.load(path)
+        pipe = data["pipeline"]
+        features = data["features"]
         
-        # Check for exact match first
-        exact_match = df[
-            (df['Etage'] == etage) & 
-            (df['Age'] == age) & 
-            (df['Aire_Batiment'] == aire_batiment) & 
-            (df['Aire_Lot'] == aire_lot) & 
-            (df['Prox_Riverain'] == prox_riverain)
-        ]
+        # Prepare input data
+        inputs_dict = {}
+        for col in config["feature_cols"]:
+            if col in kwargs:
+                inputs_dict[col] = kwargs[col]
+            else:
+                if col in config["num_cols"]:
+                    inputs_dict[col] = 0
+                elif col in config["cat_cols"]:
+                    inputs_dict[col] = "__missing__"
+                else:
+                    inputs_dict[col] = 0
+        
+        inputs = pd.DataFrame([inputs_dict])
+        inputs = create_features(inputs, region_key, is_training=False)
+        
+        # Transform using pipeline preprocessor
+        X_transformed = pipe.named_steps["preproc"].transform(inputs)
+        
+        # Transform all dataset features
+        X_dataset = pipe.named_steps["preproc"].transform(df[features])
+        
+        # Check for exact match first in original feature space
+        exact_match = df.copy()
+        for col in config["feature_cols"]:
+            if col in kwargs:
+                exact_match = exact_match[exact_match[col] == kwargs[col]]
         
         if len(exact_match) > 0:
             # Use the first exact match
             actual_price = exact_match['Prix_de_vente'].iloc[0]
             used_averaging = False
         else:
-            # Find k nearest neighbors using Euclidean distance
-            # We use only the explanatory variables for distance calculation
-            X_features = df[feature_cols].values
-            
-            # Calculate distances
-            distances = np.sqrt(np.sum((X_features - input_vector) ** 2, axis=1))
+            # Find k nearest neighbors using Euclidean distance in preprocessed space
+            distances = np.sqrt(np.sum((X_dataset - X_transformed) ** 2, axis=1))
             
             # Get indices of k nearest neighbors
             nearest_indices = np.argsort(distances)[:k]
@@ -532,132 +651,149 @@ def find_nearest_neighbors_and_calculate_ratio(etage, age, aire_batiment, aire_l
         }
         
     except Exception as e:
-        st.warning(f"Could not calculate ratio: {e}")
+        st.warning(f"Could not calculate ratio for {region_key}: {e}")
         return None
 
-def compute_shap_values(etage, age, aire_batiment, aire_lot, prox_riverain):
+def compute_shap_values(region_key="BDF", **kwargs):
     """
     Compute SHAP values for property prediction using the trained GradientBoostingRegressor model.
-    
-    SHAP (SHapley Additive exPlanations) values explain how each feature contributes to the prediction.
-    Each SHAP value represents the contribution of a feature to the final prediction in dollars.
-    
-    Args:
-        etage, age, aire_batiment, aire_lot, prox_riverain: Property features
-        
-    Returns:
-        dict: SHAP values for each feature with explanations
+    Returns a dict keyed by original feature name.
     """
     try:
-        # Load the median model (50th percentile) for SHAP analysis
-        data = joblib.load(MODEL_Q50_PATH)
-        model = data["model"]
-        scaler = data["scaler"]
+        path = model_path_for(region_key, 0.5)
+        data = joblib.load(path)
+        pipe = data["pipeline"]
         features = data["features"]
-        
-        # Prepare input data
-        inputs = pd.DataFrame([{
-            "Etage": etage,
-            "Age": age,
-            "Aire_Batiment": aire_batiment,
-            "Aire_Lot": aire_lot,
-            "Prox_Riverain": prox_riverain
-        }])
-        inputs = create_features(inputs, is_training=False)
-        X_scaled = scaler.transform(inputs[features])
-        
-        # Create SHAP explainer for GradientBoostingRegressor
-        # Using TreeExplainer which is optimized for tree-based models like GradientBoostingRegressor
-        # TreeExplainer provides exact SHAP values for tree models, making it faster and more accurate
-        explainer = shap.TreeExplainer(model)
-        shap_values = explainer.shap_values(X_scaled)
-        
-        # Get feature names
-        feature_names = features
-        
-        # Create SHAP analysis results
+
+        # Build input row
+        config = REGION_CONFIG[region_key]
+        inputs_dict = {}
+        for col in config["feature_cols"]:
+            if col in kwargs:
+                inputs_dict[col] = kwargs[col]
+            else:
+                if col in config["num_cols"]:
+                    inputs_dict[col] = 0
+                elif col in config["cat_cols"]:
+                    inputs_dict[col] = "__missing__"
+                else:
+                    inputs_dict[col] = 0
+
+        # Keep some raw values for explanations
+        aire_batiment = float(inputs_dict.get("Aire_Batiment", 0) or 0)
+        aire_lot = float(inputs_dict.get("Aire_Lot", 0) or 0)
+        age = float(inputs_dict.get("Age", 0) or 0)
+        etage = float(inputs_dict.get("Etage", 0) or 0)
+        prox_riverain = int(inputs_dict.get("Prox_Riverain", 0) or 0)
+
+        inputs = pd.DataFrame([inputs_dict])
+        inputs = create_features(inputs, region_key, is_training=False)
+        X_transformed = pipe.named_steps["preproc"].transform(inputs)
+
+        # Background
+        df = pd.read_csv(config["data_path"])
+        df = create_features(df, region_key, is_training=True).dropna(subset=['Prix_de_vente'])
+        background_sample = df[features].sample(min(100, len(df)), random_state=42)
+        X_background = pipe.named_steps["preproc"].transform(background_sample)
+
+        # SHAP
+        model = pipe.named_steps["model"]
+        explainer = shap.TreeExplainer(model, data=X_background)
+        shap_values = explainer.shap_values(X_transformed)  # (1, n_features)
+
         shap_results = {}
-        
-        for i, feature in enumerate(feature_names):
-            shap_value = shap_values[0][i]  # First (and only) prediction
-            
-            # Create explanations based on feature type
+        for i, feature in enumerate(features):
+            sv = float(shap_values[0][i])
+
             if feature == "Aire_Batiment":
-                # Building area: show contribution per m²
-                contribution_per_m2 = shap_value / aire_batiment if aire_batiment > 0 else 0
+                per_m2 = (sv / aire_batiment) if aire_batiment > 0 else 0.0
                 shap_results[feature] = {
-                    "shap_value": shap_value,
-                    "description": f"Each extra 10 m² adds ~${contribution_per_m2 * 10:,.0f}",
+                    "shap_value": sv,
+                    "description": f"Each extra 10 m² adds ~${per_m2 * 10:,.0f}",
                     "label": "Building Efficiency"
                 }
-                
+
             elif feature == "Age":
-                # Age: modern vs old comparison
                 modern_threshold = 20
                 if age < modern_threshold:
                     shap_results[feature] = {
-                        "shap_value": shap_value,
-                        "description": f"Modern building (Age < {modern_threshold}) adds ${shap_value:,.0f}",
+                        "shap_value": sv,
+                        "description": f"Modern building (Age < {modern_threshold}) adds ${sv:,.0f}",
                         "label": "Condition"
                     }
                 else:
                     shap_results[feature] = {
-                        "shap_value": shap_value,
-                        "description": f"Older building (Age ≥ {modern_threshold}) reduces value by ${abs(shap_value):,.0f}",
+                        "shap_value": sv,
+                        "description": f"Older building (Age ≥ {modern_threshold}) reduces value by ${abs(sv):,.0f}",
                         "label": "Condition"
                     }
-                    
+
             elif feature == "Prox_Riverain":
-                # Waterfront proximity
                 if prox_riverain == 1:
                     shap_results[feature] = {
-                        "shap_value": shap_value,
-                        "description": f"Waterfront location adds ${shap_value:,.0f}",
+                        "shap_value": sv,
+                        "description": f"Waterfront location adds ${sv:,.0f}",
                         "label": "Premium Location"
                     }
                 else:
                     shap_results[feature] = {
-                        "shap_value": shap_value,
-                        "description": f"Non-waterfront location: ${shap_value:,.0f} impact",
+                        "shap_value": sv,
+                        "description": f"Non-waterfront location: ${sv:,.0f} impact",
                         "label": "Premium Location"
                     }
-                    
+
             elif feature == "Etage":
-                # Floor level
                 if etage > 1:
                     shap_results[feature] = {
-                        "shap_value": shap_value,
-                        "description": f"Multi-floor ({etage} floors) adds ${shap_value:,.0f}",
+                        "shap_value": sv,
+                        "description": f"Multi-floor ({int(etage)} floors) adds ${sv:,.0f}",
                         "label": "Floor Level"
                     }
                 else:
                     shap_results[feature] = {
-                        "shap_value": shap_value,
-                        "description": f"Single floor: ${shap_value:,.0f} impact",
+                        "shap_value": sv,
+                        "description": f"Single floor: ${sv:,.0f} impact",
                         "label": "Floor Level"
                     }
-                    
+
             elif feature == "Aire_Lot":
-                # Lot area: show contribution per m²
-                contribution_per_m2 = shap_value / aire_lot if aire_lot > 0 else 0
+                per_m2 = (sv / aire_lot) if aire_lot > 0 else 0.0
                 shap_results[feature] = {
-                    "shap_value": shap_value,
-                    "description": f"Each extra 10 m² adds ~${contribution_per_m2 * 10:,.0f}",
+                    "shap_value": sv,
+                    "description": f"Each extra 10 m² adds ~${per_m2 * 10:,.0f}",
                     "label": "Lot Size"
                 }
-        
+
+            # For other features (e.g., PMR category/park/metro), you can add cases later.
         return shap_results
-        
+
     except Exception as e:
         st.warning(f"Could not compute SHAP values: {e}")
         return None
 
 
 
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🏠 Property Valuation System</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="text-align: center; font-size: 1.2rem; color: #666;">Gradient Boosting with Quantile Loss for Accurate Property Valuations</p>', unsafe_allow_html=True)
+    st.markdown('<p style="text-align: center; font-size: 1.2rem; color: #666;">Multi-Region Gradient Boosting with Quantile Loss for Accurate Property Valuations</p>', unsafe_allow_html=True)
+    
+    # Region selector
+    st.sidebar.title("Region Selection")
+    region_key = st.sidebar.selectbox(
+        "Select Region:",
+        ["BDF", "PMR", "Ste-Rose"],
+        index=0,
+        format_func=lambda x: REGION_CONFIG[x]["name"]
+    )
+    
+    # Show selected region info
+    selected_region = REGION_CONFIG[region_key]
+    st.sidebar.info(f"**Selected:** {selected_region['name']}")
+    
+    # Debug info checkbox
+    show_debug = st.sidebar.checkbox("Show debug info", value=False)
     
     # Sidebar navigation
     st.sidebar.title("Navigation")
@@ -682,15 +818,17 @@ def main():
         2. **Get Valuations**: Use "Property Valuation" for custom estimates
         """)
         
-        # Check model status
-        if MODEL_Q50_PATH.exists():
-            st.markdown('<div class="success-box">', unsafe_allow_html=True)
-            st.markdown("✅ **Model Status**: Quantile models are trained and ready to use!")
-            st.markdown("</div>", unsafe_allow_html=True)
-        else:
-            st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-            st.markdown("⚠️ **Model Status**: Models need to be trained. Go to 'Model Performance' to train the models.")
-            st.markdown("</div>", unsafe_allow_html=True)
+        # Replace the whole "Check model status" block with this:
+model_exists = model_path_for(region_key, 0.5).exists()
+if model_exists:
+    st.markdown('<div class="success-box">', unsafe_allow_html=True)
+    st.markdown("✅ **Model Status**: Quantile models are trained and ready to use!")
+    st.markdown("</div>", unsafe_allow_html=True)
+else:
+    st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+    st.markdown("⚠️ **Model Status**: Models need to be trained for this region. Go to 'Model Performance' to train the models.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
         
         # Quick stats
         col1, col2, col3 = st.columns(3)
@@ -705,46 +843,101 @@ def main():
             st.metric("Features", "5 Raw Attributes", "Raw attributes for more relevant insights")
     
     elif page == "Property Valuation":
-        st.header("🏠 Property Valuation")
-        # Note: Using "Gradient Boosting with Quantile Loss" instead of "Quantile Regression" 
-        # because quantile regression typically refers to linear methods, while this app uses GradientBoostingRegressor with quantile loss
+        st.header(f"🏠 Property Valuation - {selected_region['name']}")
         
-        if not MODEL_Q50_PATH.exists():
-            st.error("⚠️ Models need to be trained first. Please go to 'Model Performance' to train the models.")
+        # Check if models exist for this region
+        model_path = model_path_for(region_key, 0.5)
+        if not model_path.exists():
+            st.error(f"⚠️ Models for {selected_region['name']} need to be trained first. Please go to 'Model Performance' to train the models.")
             return
         
+        # Dynamic input fields based on region
         with st.form("valuation_form"):
             st.subheader("Enter Property Details")
             
+            # Get region configuration
+            config = REGION_CONFIG[region_key]
+            feature_cols = config["feature_cols"]
+            num_cols = config["num_cols"]
+            cat_cols = config["cat_cols"]
+            
+            # Create input fields dynamically
+            input_values = {}
+            
+            # Split into two columns
             col1, col2 = st.columns(2)
             
             with col1:
-                etage = st.number_input("Floor", min_value=1, max_value=20, value=2)
-                age = st.number_input("Building Age (years)", min_value=0, max_value=100, value=15)
-                aire_batiment = st.number_input("Building Area (m²)", min_value=20.0, max_value=1000.0, value=120.0, step=10.0)
+                for i, feature in enumerate(feature_cols[:len(feature_cols)//2 + 1]):
+                    if feature == "Etage":
+                        input_values[feature] = st.number_input("Floor", min_value=1, max_value=20, value=2)
+                    elif feature == "Age":
+                        input_values[feature] = st.number_input("Building Age (years)", min_value=0, max_value=100, value=15)
+                    elif feature == "Aire_Batiment":
+                        input_values[feature] = st.number_input("Building Area (m²)", min_value=20.0, max_value=1000.0, value=120.0, step=10.0)
+                    elif feature == "Aire_Lot":
+                        input_values[feature] = st.number_input("Lot Area (m²)", min_value=50.0, max_value=2000.0, value=300.0, step=50.0)
+                    elif feature == "Prox_Riverain":
+                        input_values[feature] = st.selectbox("Waterfront Proximity", options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
+                    elif feature == "Taxes_annuelles":
+                        input_values[feature] = st.number_input("Annual Taxes ($)", min_value=0.0, max_value=50000.0, value=3000.0, step=100.0)
+                    elif feature == "Category":
+                        # Load unique categories from PMR dataset
+                        try:
+                            df_pmr = pd.read_csv(config["data_path"])
+                            categories = df_pmr["Category"].unique().tolist()
+                            input_values[feature] = st.selectbox("Category", options=categories)
+                        except:
+                            input_values[feature] = st.text_input("Category", value="Residential")
+                    elif feature in ["Near_A_Park", "Near_Metro_Station"]:
+                        input_values[feature] = st.selectbox(feature.replace("_", " "), options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
             
             with col2:
-                aire_lot = st.number_input("Lot Area (m²)", min_value=50.0, max_value=2000.0, value=300.0, step=50.0)
-                prox_riverain = st.selectbox("Waterfront Proximity", options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
+                for feature in feature_cols[len(feature_cols)//2 + 1:]:
+                    if feature == "Etage":
+                        input_values[feature] = st.number_input("Floor", min_value=1, max_value=20, value=2)
+                    elif feature == "Age":
+                        input_values[feature] = st.number_input("Building Age (years)", min_value=0, max_value=100, value=15)
+                    elif feature == "Aire_Batiment":
+                        input_values[feature] = st.number_input("Building Area (m²)", min_value=20.0, max_value=1000.0, value=120.0, step=10.0)
+                    elif feature == "Aire_Lot":
+                        input_values[feature] = st.number_input("Lot Area (m²)", min_value=50.0, max_value=2000.0, value=300.0, step=50.0)
+                    elif feature == "Prox_Riverain":
+                        input_values[feature] = st.selectbox("Waterfront Proximity", options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
+                    elif feature == "Taxes_annuelles":
+                        input_values[feature] = st.number_input("Annual Taxes ($)", min_value=0.0, max_value=50000.0, value=3000.0, step=100.0)
+                    elif feature == "Category":
+                        try:
+                            df_pmr = pd.read_csv(config["data_path"])
+                            categories = df_pmr["Category"].unique().tolist()
+                            input_values[feature] = st.selectbox("Category", options=categories)
+                        except:
+                            input_values[feature] = st.text_input("Category", value="Residential")
+                    elif feature in ["Near_A_Park", "Near_Metro_Station"]:
+                        input_values[feature] = st.selectbox(feature.replace("_", " "), options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
             
             submitted = st.form_submit_button("Get Valuation")
             
             if submitted:
                 try:
                     # Validate inputs
-                    if aire_batiment <= 0:
+                    if "Aire_Batiment" in input_values and input_values["Aire_Batiment"] <= 0:
                         st.error("Please enter a valid building area.")
                         return
                     
-                    # Make prediction
-                    low, median, high = predict_with_models(etage, age, aire_batiment, aire_lot, prox_riverain)
+                    # Make prediction with region-aware function
+                    low, median, high = predict_with_models(region_key, **input_values)
+                    
+                    if low is None or median is None or high is None:
+                        st.error("Prediction failed. Please check if models are trained.")
+                        return
                     
                     # Get MAE for display
-                    mae = get_model_mae()
+                    mae = get_model_mae(region_key)
                     
                     # Calculate ratio for KPI
                     ratio_result = find_nearest_neighbors_and_calculate_ratio(
-                        etage, age, aire_batiment, aire_lot, prox_riverain, median
+                        region_key=region_key, predicted_value=median, **input_values
                     )
                     
                     # Display results
@@ -784,7 +977,7 @@ def main():
                     
                     # SHAP Waterfall Chart
                     st.subheader("Price Construction (SHAP Waterfall)")
-                    fig = create_shap_waterfall_chart(etage, age, aire_batiment, aire_lot, prox_riverain, median)
+                    fig = create_shap_waterfall_chart(region_key=region_key, predicted_value=median, **input_values)
                     if fig:
                         st.plotly_chart(fig, use_container_width=True)
                         st.info("💡 **Price Construction**: This chart starts from the dataset's average property value and shows how each attribute contributes positively or negatively to the final predicted price.")
@@ -795,7 +988,8 @@ def main():
                     col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        price_per_m2 = median / aire_batiment
+                        price_per_m2 = median / float(input_values.get("Aire_Batiment", 0) or 1)
+
                         st.metric("Price per m²", f"${price_per_m2:,.0f}")
                     
                     with col2:
@@ -824,11 +1018,11 @@ def main():
                     # Compute SHAP values for this specific property
                     # SHAP values explain how each feature contributes to the prediction in dollars
                     # Positive values increase the predicted price, negative values decrease it
-                    shap_results = compute_shap_values(etage, age, aire_batiment, aire_lot, prox_riverain)
+                    shap_results = compute_shap_values(region_key=region_key, **input_values)
                     
                     if shap_results:
                         st.markdown('<div class="compact-info">💡 <strong>SHAP Analysis</strong>: Each value shows how much each feature contributes to the predicted price in dollars.</div>', unsafe_allow_html=True)
-
+                        
                         # Maintain logical grouping but render as compact horizontal cards
                         shap_sections = {
                             "Building Efficiency": ["Aire_Batiment"],
@@ -837,7 +1031,7 @@ def main():
                             "Floor Level": ["Etage"],
                             "Lot Size": ["Aire_Lot"]
                         }
-
+                        
                         cards_html_parts = []
                         for section_name, features in shap_sections.items():
                             for feature in features:
@@ -880,50 +1074,71 @@ def main():
 
     
     elif page == "Model Performance":
-        st.header("📈 Model Training & Performance")
-        # Note: Using "Gradient Boosting with Quantile Loss" instead of "Quantile Regression" 
-        # because quantile regression typically refers to linear methods, while this app uses GradientBoostingRegressor with quantile loss
+        st.header(f"📈 Model Training & Performance - {selected_region['name']}")
         
-        if st.button("🚀 Train Quantile Models", type="primary"):
+        # Check if models exist for this region
+        model_path = model_path_for(region_key, 0.5)
+        
+        if st.button(f"🚀 Train Quantile Models for {selected_region['name']}", type="primary"):
             try:
-                with st.spinner("Training models..."):
-                    metrics = train_quantile_models(DATA_PATH)
+                with st.spinner(f"Training models for {selected_region['name']}..."):
+                    metrics = train_quantile_models(region_key)
                 
-                st.success("✅ Models trained and saved successfully!")
+                st.success(f"✅ Models for {selected_region['name']} trained and saved successfully!")
                 
                 # Display metrics
-                st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
-                st.markdown("*Average prediction error*")
+                if "MAE" in metrics:
+                    st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
+                    st.markdown("*Average prediction error*")
+                
+                if "R2" in metrics:
+                    st.metric("R² Score", f"{metrics['R2']:.3f}")
+                    st.markdown("*Model fit quality*")
                 
                 # Model info
                 st.subheader("Model Information")
-                st.markdown("""
-                **Gradient Boosting with Quantile Loss Models Trained:**
+                config = REGION_CONFIG[region_key]
+                st.markdown(f"""
+                **Gradient Boosting with Quantile Loss Models Trained for {selected_region['name']}:**
                 - **5th percentile model**: Lower bound predictions
                 - **50th percentile model**: Median predictions  
                 - **95th percentile model**: Upper bound predictions
                 
                 **Features Used:**
-                - Floor level, building age, building area, lot area, waterfront proximity
+                - {', '.join(config['feature_cols'])}
                 - Raw property attributes from the dataset
-                - Robust scaling for outlier handling
+                - Full sklearn Pipeline with preprocessing
                 """)
                 
+                if show_debug:
+                    st.info(f"**Debug Info:** Models saved to {MODELS_DIR}")
+                
             except Exception as e:
-                st.error(f"❌ Training failed: {e}")
+                st.error(f"❌ Training failed for {selected_region['name']}: {e}")
         
-        elif MODEL_Q50_PATH.exists():
-            st.success("✅ Models are already trained and ready to use!")
+        elif model_path.exists():
+            st.success(f"✅ Models for {selected_region['name']} are already trained and ready to use!")
             
             # Load and display model info
             try:
-                data = joblib.load(MODEL_Q50_PATH)
+                data = joblib.load(model_path)
                 st.info("**Model Details:**")
-                st.write(f"- Features: {len(data['features'])} raw attributes by valuation model")
+                st.write(f"- Features: {len(data['features'])} attributes")
+                st.write(f"- Region: {data.get('region', 'Unknown')}")
                 st.write("- Algorithm: Gradient Boosting with Quantile Loss")
-                st.write("- Scaling: Robust Scaler")
-            except:
-                st.warning("Model files exist but may be corrupted. Please retrain.")
+                st.write("- Pipeline: Full sklearn Pipeline with preprocessing")
+                
+                if "mae" in data:
+                    st.write(f"- MAE: ${data['mae']:,.0f}")
+                
+                if show_debug:
+                    st.info(f"**Debug Info:** Model loaded from {model_path}")
+                    st.write(f"Pipeline steps: {list(data['pipeline'].named_steps.keys())}")
+                    
+            except Exception as e:
+                st.warning(f"Model files exist but may be corrupted: {e}. Please retrain.")
+        else:
+            st.info(f"ℹ️ No models found for {selected_region['name']}. Click the button above to train models.")
     
     elif page == "About":
         st.header("ℹ️ About")
