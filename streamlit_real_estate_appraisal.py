@@ -288,6 +288,17 @@ def create_features(df, region_key="BDF", is_training=True):
             else:
                 df[col] = 0  # Default fallback
     
+    # Coerce numeric columns that may be stored as strings with comma decimals
+    for col in num_cols:
+        if col in df.columns and df[col].dtype == "object":
+            df[col] = (
+                df[col]
+                .astype(str)
+                .str.replace(" ", "", regex=False)
+                .str.replace(",", ".", regex=False)
+            )
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    
     # Handle PMR-specific boolean conversions
     if region_key == "PMR":
         # Convert boolean text columns to 0/1 if needed
@@ -299,8 +310,14 @@ def create_features(df, region_key="BDF", is_training=True):
     if not is_training:
         df = df.fillna(0)
     
-    # Return only the features needed by this region
-    return df[adapted_feature_cols]
+   # When training we must keep the target column alongside the features
+    if is_training and CANON_TARGET in df.columns:
+        cols_to_return = adapted_feature_cols + [CANON_TARGET]
+    else:
+        cols_to_return = adapted_feature_cols
+
+    # Return only the features needed by this region (and target if applicable)
+    return df[cols_to_return]
 
 def train_quantile_models(region_key="BDF"):
     cfg = REGION_CONFIG[region_key]
@@ -328,8 +345,8 @@ def train_quantile_models(region_key="BDF"):
     y = df["Prix_de_vente"].astype(float)
 
     # Build preprocessing pipeline
-    num_cols = [col for col in config["num_cols"] if col in feature_cols]
-    cat_cols = [col for col in config["cat_cols"] if col in feature_cols]
+   num_cols = [col for col in cfg["num_cols"] if col in feature_cols]
+    cat_cols = [col for col in cfg["cat_cols"] if col in feature_cols]
 
     numeric_transformer = Pipeline(steps=[
         ('imputer', SimpleImputer(strategy='median')),
@@ -337,7 +354,7 @@ def train_quantile_models(region_key="BDF"):
     ])
 
     categorical_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='constant', fill_value='__missing__')),
+         ('imputer', SimpleImputer(strategy='most_frequent')),
         ('onehot', OneHotEncoder(handle_unknown='ignore', drop='first'))
     ])
 
