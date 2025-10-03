@@ -16,6 +16,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import shap
 import warnings
+import unicodedata
+import re
 warnings.filterwarnings('ignore')
 
 # ---------------- CONFIG ----------------
@@ -23,7 +25,35 @@ warnings.filterwarnings('ignore')
 BASE_DIR = Path(__file__).parent
 DATA_DIR   = BASE_DIR / "data"     # <— new
 MODELS_DIR = BASE_DIR / "models"   # <— optional but recommended
-# Multi-region configuration
+
+# ---- Minimal target handling (simple & strict) ----
+CANON_TARGET = "Prix_de_vente"
+
+def load_region_dataframe_simple(region_key: str) -> pd.DataFrame:
+    """Load the CSV for a region and make sure the target is named Prix_de_vente."""
+    cfg = REGION_CONFIG[region_key]
+    df = pd.read_csv(cfg["data_path"], encoding="utf-8-sig")
+
+    # normalize trivial header differences
+    df.columns = [c.strip() for c in df.columns]
+
+    # minimal target handling: accept a few common variants, otherwise fail fast
+    if CANON_TARGET not in df.columns:
+        for alt in ["Prix_de_Vente", "prix_de_vente", "Prix", "Price", "price_sold"]:
+            if alt in df.columns:
+                df = df.rename(columns={alt: CANON_TARGET})
+                break
+
+    if CANON_TARGET not in df.columns:
+        raise ValueError(
+            f"[{region_key}] Target column '{CANON_TARGET}' not found in {cfg['data_path'].name}. "
+            f"Found columns: {list(df.columns)}. "
+            "Rename your CSV header to 'Prix_de_vente' (preferred), "
+            "or add its current name to the alt list above."
+        )
+
+    return df
+
 # Multi-region configuration
 REGION_CONFIG = {
     "BDF": {
@@ -281,7 +311,8 @@ def train_quantile_models(region_key="BDF"):
         raise FileNotFoundError(f"Dataset introuvable : {csv_path}")
     
     with st.spinner(f"Loading and preparing data for {config['name']}..."):
-        df = pd.read_csv(csv_path)
+        
+        df = load_region_dataframe_simple(region_key)
         df = create_features(df, region_key, is_training=True)
         df = df.dropna(subset=['Prix_de_vente'])
 
