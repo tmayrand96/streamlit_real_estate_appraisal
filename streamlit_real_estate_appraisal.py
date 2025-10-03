@@ -303,37 +303,29 @@ def create_features(df, region_key="BDF", is_training=True):
     return df[adapted_feature_cols]
 
 def train_quantile_models(region_key="BDF"):
-    """Train quantile regression models for a specific region using sklearn Pipeline"""
-    config = REGION_CONFIG[region_key]
-    csv_path = config["data_path"]
-
+    cfg = REGION_CONFIG[region_key]
+    csv_path = cfg["data_path"]
     if not csv_path.exists():
-        raise FileNotFoundError(f"Dataset introuvable : {csv_path}")
+        raise FileNotFoundError(f"Dataset not found: {csv_path}")
 
-    with st.spinner(f"Loading and preparing data for {config['name']}..."):
-        # If you added the simple loader, call it here, else keep pd.read_csv(csv_path)
-        df = pd.read_csv(csv_path, encoding="utf-8-sig")
-        # If needed, normalize the target a tiny bit:
-        if "Prix_de_vente" not in df.columns:
-            for alt in ["Prix_de_Vente", "prix_de_vente", "Prix", "Price", "price_sold"]:
-                if alt in df.columns:
-                    df = df.rename(columns={alt: "Prix_de_vente"})
-                    break
+    # 1) Load and standardize target
+    df = load_region_dataframe_simple(region_key)
 
-        df = create_features(df, region_key, is_training=True)
+    # 2) Prepare features (but do NOT drop target)
+    df = create_features(df, region_key, is_training=True)
 
-        if "Prix_de_vente" not in df.columns:
-            raise ValueError(f"[{config['name']}] Target 'Prix_de_vente' not found. Columns: {list(df.columns)}")
+    # 3) Ensure target exists and is not NaN
+    if "Prix_de_vente" not in df.columns:
+        raise ValueError(f"[{cfg['name']}] Target 'Prix_de_vente' not found. Columns: {list(df.columns)}")
+    df = df.dropna(subset=["Prix_de_vente"])
 
-        df = df.dropna(subset=['Prix_de_vente'])
+    # 4) Pick features strictly from config
+    feature_cols = [c for c in cfg["feature_cols"] if c in df.columns]
+    if not feature_cols:
+        raise ValueError(f"[{cfg['name']}] No usable features. Columns: {list(df.columns)}")
 
-        # Build feature list strictly from your REGION_CONFIG
-        feature_cols = [c for c in config["feature_cols"] if c in df.columns]
-        if not feature_cols:
-            raise ValueError(f"[{config['name']}] No usable features. Columns present: {list(df.columns)}")
-
-        X = df[feature_cols]
-        y = df['Prix_de_vente'].astype(float)
+    X = df[feature_cols].copy()
+    y = df["Prix_de_vente"].astype(float)
 
     # Build preprocessing pipeline
     num_cols = [col for col in config["num_cols"] if col in feature_cols]
