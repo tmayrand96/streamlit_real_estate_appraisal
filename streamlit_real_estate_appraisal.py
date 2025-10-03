@@ -37,16 +37,16 @@ REGION_CONFIG = {
     "PMR": {
         "name": "Plateau Mont-Royal",
         "data_path": DATA_DIR / "Dataset_PMR.csv",
-        "feature_cols": ["Category", "Etage", "Age", "Aire_Batiment", "Taxes_annuelles", "Near_A_Park", "Near_Metro_Station"],
-        "num_cols": ["Etage", "Age", "Aire_Batiment", "Taxes_annuelles"],
-        "cat_cols": ["Category", "Near_A_Park", "Near_Metro_Station"],
+        "feature_cols": ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE", "ETAGES", "AGE", "AIRE_HABITABLE", "TAXES_AN", "Prox_Parc", "Prox_Metro"],
+        "num_cols": ["ETAGES", "AGE", "AIRE_HABITABLE", "TAXES_AN", "Prox_Parc", "Prox_Metro"],
+        "cat_cols": ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"],
         "model_prefix": "pmr"
     },
     "Ste-Rose": {
         "name": "Sainte-Rose",
         "data_path": DATA_DIR / "Dataset_Ste-Rose.csv",
-        "feature_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"],
-        "num_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot"],
+        "feature_cols": ["Etage", "Age", "Aire_Batiment_m2", "Aire_Lot_m2", "Garage", "Amenagement_paysager"],
+        "num_cols": ["Etage", "Age", "Aire_Batiment_m2", "Aire_Lot_m2", "Garage", "Amenagement_paysager"],
         "cat_cols": [],
         "model_prefix": "ste_rose"
     }
