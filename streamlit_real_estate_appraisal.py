@@ -306,46 +306,49 @@ def train_quantile_models(region_key="BDF"):
     """Train quantile regression models for a specific region using sklearn Pipeline"""
     config = REGION_CONFIG[region_key]
     csv_path = config["data_path"]
-    
+
     if not csv_path.exists():
         raise FileNotFoundError(f"Dataset introuvable : {csv_path}")
-    
+
     with st.spinner(f"Loading and preparing data for {config['name']}..."):
-        
-        df = load_region_dataframe_simple(region_key)
+        # If you added the simple loader, call it here, else keep pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path, encoding="utf-8-sig")
+        # If needed, normalize the target a tiny bit:
+        if "Prix_de_vente" not in df.columns:
+            for alt in ["Prix_de_Vente", "prix_de_vente", "Prix", "Price", "price_sold"]:
+                if alt in df.columns:
+                    df = df.rename(columns={alt: "Prix_de_vente"})
+                    break
+
         df = create_features(df, region_key, is_training=True)
+
+        if "Prix_de_vente" not in df.columns:
+            raise ValueError(f"[{config['name']}] Target 'Prix_de_vente' not found. Columns: {list(df.columns)}")
+
         df = df.dropna(subset=['Prix_de_vente'])
 
-        # Small data safeguards
-        n_samples = len(df)
-        if n_samples < 100:
-            st.warning(f"⚠️ Small dataset detected ({n_samples} samples). Results may be less reliable.")
-        if n_samples < 50:
-            st.error(f"❌ Dataset too small ({n_samples} samples). Consider collecting more data.")
+        # Build feature list strictly from your REGION_CONFIG
+        feature_cols = [c for c in config["feature_cols"] if c in df.columns]
+        if not feature_cols:
+            raise ValueError(f"[{config['name']}] No usable features. Columns present: {list(df.columns)}")
 
-    # Get adapted feature columns
-    feature_cols = list(df.columns)
-    feature_cols = [col for col in feature_cols if col != 'Prix_de_vente']
-    
-    X = df[feature_cols]
-    y = df['Prix_de_vente']
+        X = df[feature_cols]
+        y = df['Prix_de_vente'].astype(float)
 
     # Build preprocessing pipeline
     num_cols = [col for col in config["num_cols"] if col in feature_cols]
     cat_cols = [col for col in config["cat_cols"] if col in feature_cols]
-    
-    # Create transformers
+
     numeric_transformer = Pipeline(steps=[
         ('imputer', SimpleImputer(strategy='median')),
         ('scaler', RobustScaler())
     ])
-    
+
     categorical_transformer = Pipeline(steps=[
         ('imputer', SimpleImputer(strategy='constant', fill_value='__missing__')),
         ('onehot', OneHotEncoder(handle_unknown='ignore', drop='first'))
     ])
-    
-    # Create preprocessor
+
     preprocessor = ColumnTransformer(
         transformers=[
             ('num', numeric_transformer, num_cols),
@@ -355,22 +358,16 @@ def train_quantile_models(region_key="BDF"):
     )
 
     metrics = {}
-    
-    with st.spinner("Training quantile models..."):
+    with st.spinner("Training quantile models."):
         for alpha in [0.05, 0.50, 0.95]:
-            # Create full pipeline
             pipe = Pipeline([
                 ('preproc', preprocessor),
                 ('model', GradientBoostingRegressor(loss="quantile", alpha=alpha, random_state=42))
             ])
-            
-            # Train-test split
+
             X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
-            
-            # Train pipeline
             pipe.fit(X_train, y_train)
-            
-            # Store model data
+
             model_data = {
                 "pipeline": pipe,
                 "features": feature_cols,
@@ -378,15 +375,13 @@ def train_quantile_models(region_key="BDF"):
                 "num_cols": num_cols,
                 "cat_cols": cat_cols
             }
-            
-            # For the median model (alpha=0.50), also store MAE
+
             if alpha == 0.50:
                 y_pred_val = pipe.predict(X_val)
                 metrics["R2"] = r2_score(y_val, y_pred_val)
                 metrics["MAE"] = mean_absolute_error(y_val, y_pred_val)
                 model_data["mae"] = metrics["MAE"]
-            
-            # Save pipeline
+
             path = model_path_for(region_key, alpha)
             joblib.dump(model_data, path)
 
@@ -825,9 +820,6 @@ def main():
     # Show selected region info
     selected_region = REGION_CONFIG[region_key]
     st.sidebar.info(f"**Selected:** {selected_region['name']}")
-    
-    # Debug info checkbox
-    show_debug = st.sidebar.checkbox("Show debug info", value=False)
     
     # Sidebar navigation
     st.sidebar.title("Navigation")
