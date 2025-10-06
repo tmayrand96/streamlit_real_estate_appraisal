@@ -287,7 +287,7 @@ def create_features(df, region_key="BDF", is_training=True):
                 df[col] = "__missing__"  # Default categorical value
             else:
                 df[col] = 0  # Default fallback
-    
+
     # Coerce numeric columns that may be stored as strings with comma decimals
     for col in num_cols:
         if col in df.columns and df[col].dtype == "object":
@@ -311,6 +311,12 @@ def create_features(df, region_key="BDF", is_training=True):
         df = df.fillna(0)
     
    # When training we must keep the target column alongside the features
+    if is_training and CANON_TARGET in df.columns:
+        cols_to_return = adapted_feature_cols + [CANON_TARGET]
+    else:
+        cols_to_return = adapted_feature_cols
+
+    # When training we must keep the target column alongside the features
     if is_training and CANON_TARGET in df.columns:
         cols_to_return = adapted_feature_cols + [CANON_TARGET]
     else:
@@ -345,13 +351,12 @@ def train_quantile_models(region_key="BDF"):
     y = df["Prix_de_vente"].astype(float)
 
     # Build preprocessing pipeline
-   num_cols = [col for col in cfg["num_cols"] if col in feature_cols]
+    num_cols = [col for col in cfg["num_cols"] if col in feature_cols]
     cat_cols = [col for col in cfg["cat_cols"] if col in feature_cols]
 
     numeric_transformer = Pipeline(steps=[
-        ('imputer', SimpleImputer(strategy='median')),
-        ('scaler', RobustScaler())
-    ])
+        ('imputer', SimpleImputer(strategy='most_frequent')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore', drop='first'))    ])
 
     categorical_transformer = Pipeline(steps=[
          ('imputer', SimpleImputer(strategy='most_frequent')),
