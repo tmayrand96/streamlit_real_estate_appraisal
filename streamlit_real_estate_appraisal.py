@@ -854,17 +854,16 @@ def main():
         2. **Get Valuations**: Use "Property Valuation" for custom estimates
         """)
         
-        # Replace the whole "Check model status" block with this:
-model_exists = model_path_for(region_key, 0.5).exists()
-if model_exists:
-    st.markdown('<div class="success-box">', unsafe_allow_html=True)
-    st.markdown("✅ **Model Status**: Quantile models are trained and ready to use!")
-    st.markdown("</div>", unsafe_allow_html=True)
-else:
-    st.markdown('<div class="warning-box">', unsafe_allow_html=True)
-    st.markdown("⚠️ **Model Status**: Models need to be trained for this region. Go to 'Model Performance' to train the models.")
-    st.markdown("</div>", unsafe_allow_html=True)
-
+        # Check model status
+        model_exists = model_path_for(region_key, 0.5).exists()
+        if model_exists:
+            st.markdown('<div class="success-box">', unsafe_allow_html=True)
+            st.markdown("✅ **Model Status**: Quantile models are trained and ready to use!")
+            st.markdown("</div>", unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="warning-box">', unsafe_allow_html=True)
+            st.markdown("⚠️ **Model Status**: Models need to be trained for this region. Go to 'Model Performance' to train the models.")
+            st.markdown("</div>", unsafe_allow_html=True)
         
         # Quick stats
         col1, col2, col3 = st.columns(3)
