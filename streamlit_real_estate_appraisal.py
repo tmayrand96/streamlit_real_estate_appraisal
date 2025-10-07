@@ -22,12 +22,13 @@ warnings.filterwarnings('ignore')
 # ---------------- CONFIG ----------------
 # Base directory of the current script
 BASE_DIR = Path(__file__).parent
+DATA_DIR = BASE_DIR / "data"
 
 # Multi-region configuration
 REGION_CONFIG = {
     "BDF": {
         "name": "Bois-Des-Filion",
-        "data_path": BASE_DIR / "donnees_BDF.csv",
+        "data_path": DATA_DIR / "donnees_BDF.csv",
         "feature_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"],
         "num_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot"],
         "cat_cols": [],
@@ -35,7 +36,7 @@ REGION_CONFIG = {
     },
     "PMR": {
         "name": "Plateau Mont-Royal",
-        "data_path": BASE_DIR / "Dataset_PMR.csv",
+        "data_path": DATA_DIR / "Dataset_PMR.csv",
         "feature_cols": ["Category", "Etage", "Age", "Aire_Batiment", "Taxes_annuelles", "Near_A_Park", "Near_Metro_Station"],
         "num_cols": ["Etage", "Age", "Aire_Batiment", "Taxes_annuelles"],
         "cat_cols": ["Category", "Near_A_Park", "Near_Metro_Station"],
@@ -43,7 +44,7 @@ REGION_CONFIG = {
     },
     "Ste-Rose": {
         "name": "Sainte-Rose",
-        "data_path": BASE_DIR / "Dataset_Ste-Rose.csv",
+        "data_path": DATA_DIR / "Dataset_Ste-Rose.csv",
         "feature_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"],
         "num_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot"],
         "cat_cols": [],
