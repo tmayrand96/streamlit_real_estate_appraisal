@@ -10,12 +10,13 @@ from sklearn.impute import SimpleImputer
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.metrics import r2_score, mean_absolute_error
+from sklearn.metrics import mean_absolute_error
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import shap
 import warnings
+import re
 warnings.filterwarnings('ignore')
 
 # ---------------- CONFIG ----------------
@@ -228,6 +229,36 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------- FONCTIONS ----------------
+def _read_binary(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+def get_transformed_feature_names(preprocessor, num_cols, cat_cols):
+    names = []
+    for name, trans, cols in preprocessor.transformers_:
+        if name == 'num':
+            # passthrough numeric transformed by scaler; same count
+            names.extend(list(cols))
+        elif name == 'cat':
+            ohe = trans.named_steps.get('onehot')
+            if ohe is not None:
+                ohe_names = ohe.get_feature_names_out(cols)
+                names.extend(ohe_names.tolist())
+            else:
+                names.extend(list(cols))
+    return names
+
+def aggregate_shap_to_original(shap_vec, transformed_names, num_cols, cat_cols):
+    """Sum SHAP contributions of one-hot expanded categories back into their original source feature names."""
+    agg = {c: 0.0 for c in list(num_cols) + list(cat_cols)}
+    for val, tname in zip(shap_vec, transformed_names):
+        # tname examples: "onehot__CONDO_1" or "CONDO_1" depending on versions; use regex to recover base
+        base = re.split(r'[_]{2}', tname)[-1]  # strip pipeline prefix if any
+        base = re.split(r'_', base)[0]        # take the source col before first underscore
+        if base in agg:
+            agg[base] += float(val)
+    return agg
+
 def create_features(df, region_key="BDF", is_training=True):
     """Prepare raw data features for a specific region"""
     df = df.copy()
@@ -348,7 +379,6 @@ def train_quantile_models(region_key="BDF"):
             # For the median model (alpha=0.50), also store MAE
             if alpha == 0.50:
                 y_pred_val = pipe.predict(X_val)
-                metrics["R2"] = r2_score(y_val, y_pred_val)
                 metrics["MAE"] = mean_absolute_error(y_val, y_pred_val)
                 model_data["mae"] = metrics["MAE"]
             
@@ -467,6 +497,12 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
         # Build waterfall data
         feature_names = features
         shap_contributions = shap_values[0]  # (n_features,)
+        
+        # Check for NaN values
+        if np.isnan(shap_contributions).any():
+            raise ValueError("NaN in SHAP contributions after preprocessing.")
+        
+        # Create waterfall data
         waterfall_data = []
         cumulative_value = base_value
 
@@ -989,7 +1025,6 @@ else:
                     
                     with col1:
                         price_per_m2 = median / float(input_values.get("Aire_Batiment", 0) or 1)
-
                         st.metric("Price per m²", f"${price_per_m2:,.0f}")
                     
                     with col2:
@@ -1095,6 +1130,22 @@ else:
                     st.metric("R² Score", f"{metrics['R2']:.3f}")
                     st.markdown("*Model fit quality*")
                 
+                # Temporary Model Downloads
+                st.subheader("Temporary Model Downloads (this branch only)")
+                alpha_map = {0.05: "q05", 0.50: "q50", 0.95: "q95"}
+                model_paths = [MODEL_Q05_PATH, MODEL_Q50_PATH, MODEL_Q95_PATH]
+                alphas = [0.05, 0.50, 0.95]
+                
+                for alpha, path in zip(alphas, model_paths):
+                    if path.exists():
+                        st.download_button(
+                            label=f"⬇️ Download model ({alpha_map[alpha]})",
+                            data=_read_binary(path),
+                            file_name=path.name,
+                            mime="application/octet-stream"
+                        )
+                st.caption("These download buttons are temporary and will be removed when merging to main.")
+                
                 # Model info
                 st.subheader("Model Information")
                 config = REGION_CONFIG[region_key]
@@ -1186,7 +1237,7 @@ else:
         
         ---
         **Note**:  
-        The model is evaluated internally using several statistical metrics (including R²), but these are kept under the hood.  
+        The model is evaluated internally using several statistical metrics, but these are kept under the hood.  
         What you see in the app are the confidence intervals and error metrics (such as MAE), which are the most relevant for decision-making.
         """)
 
