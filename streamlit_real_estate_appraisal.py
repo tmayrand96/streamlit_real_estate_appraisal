@@ -20,6 +20,35 @@ import unicodedata
 import re
 warnings.filterwarnings('ignore')
 
+# Shared quantile levels used by both the Streamlit app and the CLI utilities
+QUANTILE_LEVELS = (0.05, 0.50, 0.95)
+QUANTILE_NAME_MAP = {
+    0.05: "q05",
+    0.50: "q50",
+    0.95: "q95",
+}
+
+
+def _is_streamlit_runtime() -> bool:
+    """Return True when executed inside an active Streamlit session."""
+    try:
+        from streamlit.runtime import exists  # type: ignore
+
+        return bool(exists())
+    except Exception:
+        return False
+
+
+def _warn(message: str) -> None:
+    """Emit a warning that gracefully falls back to stdout when CLI driven."""
+    try:
+        if _is_streamlit_runtime():
+            st.warning(message)
+        else:
+            print(f"[warning] {message}")
+    except Exception:
+        print(f"[warning] {message}")
+
 # ---------------- CONFIG ----------------
 # Base directory of the current script
 BASE_DIR = Path(__file__).parent
@@ -90,7 +119,7 @@ MODELS_DIR.mkdir(exist_ok=True)
 def model_path_for(region_key, alpha):
     """Get model path for a specific region and quantile"""
     prefix = REGION_CONFIG[region_key]["model_prefix"]
-    q = {0.05: "q05", 0.5: "q50", 0.95: "q95"}[alpha]
+    q = QUANTILE_NAME_MAP[alpha]
     return MODELS_DIR / f"{prefix}_model_{q}.joblib"
 
 # Legacy compatibility - load BDF models if they exist
@@ -102,16 +131,17 @@ except:
     pass
 
 
-# Page configuration
-st.set_page_config(
-    page_title="Property Valuation System - Quantile Regression",
-    page_icon="🏠",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+if _is_streamlit_runtime():
+    # Page configuration
+    st.set_page_config(
+        page_title="Property Valuation System - Quantile Regression",
+        page_icon="🏠",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
 
-# Custom CSS for better styling
-st.markdown("""
+    # Custom CSS for better styling
+    st.markdown("""
 <style>
     .main-header {
         font-size: 3rem;
@@ -276,7 +306,7 @@ def create_features(df, region_key="BDF", is_training=True):
     adapted_feature_cols = [col for col in feature_cols if col in available_cols]
     
     if len(adapted_feature_cols) != len(feature_cols):
-        st.warning(f"Some expected columns missing for {region_key}. Using available: {adapted_feature_cols}")
+        _warn(f"Some expected columns missing for {region_key}. Using available: {adapted_feature_cols}")
     
     # Ensure all required columns exist with sensible defaults
     for col in adapted_feature_cols:
@@ -373,7 +403,7 @@ def train_quantile_models(region_key="BDF"):
 
     metrics = {}
     with st.spinner("Training quantile models."):
-        for alpha in [0.05, 0.50, 0.95]:
+        for alpha in QUANTILE_LEVELS:
             pipe = Pipeline([
                 ('preproc', preprocessor),
                 ('model', GradientBoostingRegressor(loss="quantile", alpha=alpha, random_state=42))
@@ -425,17 +455,31 @@ def predict_with_models(region_key="BDF", **kwargs):
     inputs = create_features(inputs, region_key, is_training=False)
 
     preds = {}
-    for alpha in [0.05, 0.50, 0.95]:
+    for alpha in QUANTILE_LEVELS:
         path = model_path_for(region_key, alpha)
         try:
             data = joblib.load(path)
-            pipe = data["pipeline"]
+            pipe = data.get("pipeline")
+            if pipe is None:
+                # Legacy support for earlier model blobs that stored scaler/model separately
+                model = data.get("model")
+                scaler = data.get("scaler")
+                if model is not None:
+                    if scaler is not None:
+                        from sklearn.pipeline import Pipeline
+
+                        pipe = Pipeline([("scaler", scaler), ("model", model)])
+                    else:
+                        pipe = model
+                else:
+                    raise KeyError("pipeline")
+
             preds[alpha] = float(pipe.predict(inputs)[0])
         except FileNotFoundError:
             st.error(f"Model not found for {region_key} quantile {alpha}. Please train models first.")
             return None, None, None
 
-    return preds[0.05], preds[0.50], preds[0.95]
+    return tuple(preds[q] for q in QUANTILE_LEVELS)
 
 def get_model_mae(region_key="BDF"):
     """Get the MAE from the trained model for a specific region"""

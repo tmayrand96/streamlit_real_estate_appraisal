@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import r2_score, mean_absolute_error
 
 # ----- import your config & helpers from the app -----
-from streamlit_real_estate_appraisal import REGION_CONFIG, CANON_TARGET
+from streamlit_real_estate_appraisal import REGION_CONFIG, CANON_TARGET, QUANTILE_LEVELS
 from streamlit_real_estate_appraisal import create_features, model_path_for
 
 BASE_DIR   = Path(__file__).parent
@@ -61,7 +61,7 @@ def train_region(region_key: str):
 
     metrics = {}
 
-    for alpha in (0.05, 0.50, 0.95):
+    for alpha in QUANTILE_LEVELS:
         pipe = Pipeline([('preproc', preproc),
                          ('model', GradientBoostingRegressor(loss="quantile", alpha=alpha, random_state=42))])
 
