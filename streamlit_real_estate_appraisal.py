@@ -56,6 +56,22 @@ REGION_CONFIG = {
 MODELS_DIR = BASE_DIR / "models"
 MODELS_DIR.mkdir(exist_ok=True)
 
+# --- Target handling ---
+CANON_TARGET = "Prix_de_vente"
+
+def load_region_dataframe_simple(region_key: str) -> pd.DataFrame:
+    cfg = REGION_CONFIG[region_key]
+    df = pd.read_csv(cfg["data_path"], encoding="utf-8-sig")
+    df.columns = [c.strip() for c in df.columns]
+    if CANON_TARGET not in df.columns:
+        for alt in ["Prix_de_Vente", "prix_de_vente", "Prix", "Price", "price_sold"]:
+            if alt in df.columns:
+                df = df.rename(columns={alt: CANON_TARGET})
+                break
+    if CANON_TARGET not in df.columns:
+        raise ValueError(f"[{cfg['name']}] Target '{CANON_TARGET}' not found. Columns: {list(df.columns)}")
+    return df
+
 def model_path_for(region_key, alpha):
     """Get model path for a specific region and quantile"""
     prefix = REGION_CONFIG[region_key]["model_prefix"]
@@ -310,23 +326,19 @@ def train_quantile_models(region_key="BDF"):
         raise FileNotFoundError(f"Dataset introuvable : {csv_path}")
     
     with st.spinner(f"Loading and preparing data for {config['name']}..."):
-        df = pd.read_csv(csv_path)
+        df = load_region_dataframe_simple(region_key)
         df = create_features(df, region_key, is_training=True)
-        df = df.dropna(subset=['Prix_de_vente'])
+        if CANON_TARGET not in df.columns:
+            raise ValueError(f"[{config['name']}] Target '{CANON_TARGET}' missing after feature prep. Columns: {list(df.columns)}")
+        df = df.dropna(subset=[CANON_TARGET])
 
-        # Small data safeguards
-        n_samples = len(df)
-        if n_samples < 100:
-            st.warning(f"⚠️ Small dataset detected ({n_samples} samples). Results may be less reliable.")
-        if n_samples < 50:
-            st.error(f"❌ Dataset too small ({n_samples} samples). Consider collecting more data.")
+        # Use ONLY the configured features that are present
+        feature_cols = [c for c in config["feature_cols"] if c in df.columns]
+        if not feature_cols:
+            raise ValueError(f"[{config['name']}] No usable features. Columns: {list(df.columns)}")
 
-    # Get adapted feature columns
-    feature_cols = list(df.columns)
-    feature_cols = [col for col in feature_cols if col != 'Prix_de_vente']
-    
-    X = df[feature_cols]
-    y = df['Prix_de_vente']
+        X = df[feature_cols]
+        y = df[CANON_TARGET].astype(float)
 
     # Build preprocessing pipeline
     num_cols = [col for col in config["num_cols"] if col in feature_cols]
@@ -436,8 +448,7 @@ def get_model_mae(region_key="BDF"):
             return data["mae"]
         else:
             # If MAE is not stored in the model, compute it from the training data
-            config = REGION_CONFIG[region_key]
-            df = pd.read_csv(config["data_path"])
+            df = load_region_dataframe_simple(region_key)
             df = create_features(df, region_key, is_training=True)
             df = df.dropna(subset=['Prix_de_vente'])
             
@@ -484,8 +495,8 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
         # Transform input and sample a background set in model's feature space
         X_transformed = pipe.named_steps["preproc"].transform(inputs)
 
-        df_bg = pd.read_csv(config["data_path"])
-        df_bg = create_features(df_bg, region_key, is_training=True).dropna(subset=['Prix_de_vente'])
+        df_bg = load_region_dataframe_simple(region_key)
+        df_bg = create_features(df_bg, region_key, is_training=True).dropna(subset=[CANON_TARGET])
         background_sample = df_bg[features].sample(min(100, len(df_bg)), random_state=42)
         X_background = pipe.named_steps["preproc"].transform(background_sample)
 
@@ -616,10 +627,9 @@ def find_nearest_neighbors_and_calculate_ratio(region_key="BDF", predicted_value
     """
     try:
         # Load the dataset
-        config = REGION_CONFIG[region_key]
-        df = pd.read_csv(config["data_path"])
+        df = load_region_dataframe_simple(region_key)
         df = create_features(df, region_key, is_training=True)
-        df = df.dropna(subset=['Prix_de_vente'])
+        df = df.dropna(subset=[CANON_TARGET])
         
         # Small data safeguards
         n_samples = len(df)
@@ -728,8 +738,8 @@ def compute_shap_values(region_key="BDF", **kwargs):
         X_transformed = pipe.named_steps["preproc"].transform(inputs)
 
         # Background
-        df = pd.read_csv(config["data_path"])
-        df = create_features(df, region_key, is_training=True).dropna(subset=['Prix_de_vente'])
+        df = load_region_dataframe_simple(region_key)
+        df = create_features(df, region_key, is_training=True).dropna(subset=[CANON_TARGET])
         background_sample = df[features].sample(min(100, len(df)), random_state=42)
         X_background = pipe.named_steps["preproc"].transform(background_sample)
 
@@ -920,7 +930,7 @@ def main():
                     elif feature == "Category":
                         # Load unique categories from PMR dataset
                         try:
-                            df_pmr = pd.read_csv(config["data_path"])
+                            df_pmr = load_region_dataframe_simple(region_key)
                             categories = df_pmr["Category"].unique().tolist()
                             input_values[feature] = st.selectbox("Category", options=categories)
                         except:
@@ -944,7 +954,7 @@ def main():
                         input_values[feature] = st.number_input("Annual Taxes ($)", min_value=0.0, max_value=50000.0, value=3000.0, step=100.0)
                     elif feature == "Category":
                         try:
-                            df_pmr = pd.read_csv(config["data_path"])
+                            df_pmr = load_region_dataframe_simple(region_key)
                             categories = df_pmr["Category"].unique().tolist()
                             input_values[feature] = st.selectbox("Category", options=categories)
                         except:
@@ -1133,7 +1143,7 @@ def main():
                 # Temporary Model Downloads
                 st.subheader("Temporary Model Downloads (this branch only)")
                 alpha_map = {0.05: "q05", 0.50: "q50", 0.95: "q95"}
-                model_paths = [MODEL_Q05_PATH, MODEL_Q50_PATH, MODEL_Q95_PATH]
+                model_paths = [model_path_for(region_key, a) for a in (0.05, 0.50, 0.95)]
                 alphas = [0.05, 0.50, 0.95]
                 
                 for alpha, path in zip(alphas, model_paths):
