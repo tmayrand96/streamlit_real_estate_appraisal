@@ -30,24 +30,24 @@ REGION_CONFIG = {
         "name": "Bois-Des-Filion",
         "data_path": DATA_DIR / "donnees_BDF.csv",
         "feature_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"],
-        "num_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot"],
+        "num_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"],
         "cat_cols": [],
         "model_prefix": "bdf"
     },
     "PMR": {
         "name": "Plateau Mont-Royal",
         "data_path": DATA_DIR / "Dataset_PMR.csv",
-        "feature_cols": ["Category", "Etage", "Age", "Aire_Batiment", "Taxes_annuelles", "Near_A_Park", "Near_Metro_Station"],
-        "num_cols": ["Etage", "Age", "Aire_Batiment", "Taxes_annuelles"],
-        "cat_cols": ["Category", "Near_A_Park", "Near_Metro_Station"],
+        "feature_cols": ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE", "ETAGES", "AGE", "AIRE_HABITABLE", "TAXES_AN", "Prox_Parc", "Prox_Metro"],
+        "num_cols": ["ETAGES", "AGE", "AIRE_HABITABLE", "TAXES_AN", "Prox_Parc", "Prox_Metro"],
+        "cat_cols": ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"],
         "model_prefix": "pmr"
     },
     "Ste-Rose": {
         "name": "Sainte-Rose",
         "data_path": DATA_DIR / "Dataset_Ste-Rose.csv",
-        "feature_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot", "Prox_Riverain"],
-        "num_cols": ["Etage", "Age", "Aire_Batiment", "Aire_Lot"],
-        "cat_cols": [],
+        "feature_cols": ["Etage", "Age", "Aire_Batiment_m2", "Aire_Lot_m2", "Garage", "Amenagement_paysager"],
+        "num_cols": ["Etage", "Age", "Aire_Batiment_m2", "Aire_Lot_m2"],
+        "cat_cols": ["Garage", "Amenagement_paysager"],
         "model_prefix": "ste_rose"
     }
 }
@@ -77,6 +77,38 @@ def model_path_for(region_key, alpha):
     prefix = REGION_CONFIG[region_key]["model_prefix"]
     q = {0.05: "q05", 0.5: "q50", 0.95: "q95"}[alpha]
     return MODELS_DIR / f"{prefix}_model_{q}.joblib"
+
+def models_available(region_key: str):
+    """Check if all three quantile models exist for a region"""
+    return all(model_path_for(region_key, a).exists() for a in (0.05, 0.5, 0.95))
+
+def build_input_form(region_key: str):
+    """Build input form for a specific region and return inputs, submitted flag, and missing fields"""
+    cfg = REGION_CONFIG[region_key]
+    num_cols = cfg["num_cols"]
+    cat_cols = cfg["cat_cols"]
+    inputs = {}
+    with st.form("valuation_inputs", clear_on_submit=False):
+        st.subheader("Enter property attributes")
+        # numeric inputs
+        for col in num_cols:
+            # sensible defaults
+            minv = 0.0 if col.lower()!="age" else 0
+            step = 1.0 if col.lower()=="age" or col.lower()=="etage" else 1.0
+            val = st.number_input(col, min_value=float(minv), step=float(step))
+            inputs[col] = val
+        # categorical inputs
+        for col in cat_cols:
+            if region_key=="PMR" and col in ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]:
+                choice = st.selectbox(col, ["0","1"])
+                inputs[col] = int(choice)
+            else:
+                choice = st.selectbox(col, ["0","1"])
+                inputs[col] = int(choice)
+        submit = st.form_submit_button("Estimate Value")
+    # basic validation: ensure all required keys are present
+    missing = [c for c in cfg["feature_cols"] if c not in inputs or inputs[c] in [None, ""]]
+    return inputs, submit, missing
 
 # Legacy compatibility - load BDF models if they exist
 try:
@@ -306,7 +338,7 @@ def create_features(df, region_key="BDF", is_training=True):
     # Handle PMR-specific boolean conversions
     if region_key == "PMR":
         # Convert boolean text columns to 0/1 if needed
-        for col in ["Near_A_Park", "Near_Metro_Station"]:
+        for col in ["Prox_Parc", "Prox_Metro"]:
             if col in df.columns:
                 if df[col].dtype == 'object':
                     df[col] = df[col].map({'Yes': 1, 'No': 0, 'True': 1, 'False': 0, True: 1, False: 0}).fillna(0)
@@ -474,7 +506,7 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
         data = joblib.load(path)
         pipe = data["pipeline"]
         features = data["features"]
-
+        
         # Prepare single-row input as used by the model
         config = REGION_CONFIG[region_key]
         inputs_dict = {}
@@ -505,7 +537,7 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
         explainer = shap.TreeExplainer(model, data=X_background)
         shap_values = explainer.shap_values(X_transformed)  # shape: (1, n_features)
         base_value = float(explainer.expected_value)
-
+        
         # Build waterfall data
         feature_names = features
         shap_contributions = shap_values[0]  # (n_features,)
@@ -517,7 +549,7 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
         # Create waterfall data
         waterfall_data = []
         cumulative_value = base_value
-
+        
         # Base
         waterfall_data.append({
             'feature': 'Base Value',
@@ -537,7 +569,7 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
                 'cumulative': cumulative_value,
                 'color': color
             })
-
+        
         # Final prediction
         final_val = float(predicted_value) if predicted_value is not None else cumulative_value
         waterfall_data.append({
@@ -549,7 +581,7 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
 
         # Plotly figure
         fig = go.Figure()
-
+        
         for i, point in enumerate(waterfall_data):
             if i == 0 or i == len(waterfall_data) - 1:
                 # Base and Final as absolute bars
@@ -575,7 +607,7 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
                     textposition='auto',
                     showlegend=False
                 ))
-
+        
         # Flow line
         x_positions = list(range(len(waterfall_data)))
         cumulative_values = [float(pt['cumulative']) for pt in waterfall_data]
@@ -589,7 +621,7 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
             showlegend=False,
             hoverinfo='skip'
         ))
-
+        
         fig.update_layout(
             title="Price Construction (SHAP Waterfall)",
             xaxis_title="Features",
@@ -606,7 +638,7 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
             margin=dict(b=100)
         )
         return fig
-
+        
     except Exception as e:
         st.warning(f"Could not create SHAP waterfall chart: {e}")
         return None
@@ -711,7 +743,7 @@ def compute_shap_values(region_key="BDF", **kwargs):
         data = joblib.load(path)
         pipe = data["pipeline"]
         features = data["features"]
-
+        
         # Build input row
         config = REGION_CONFIG[region_key]
         inputs_dict = {}
@@ -759,7 +791,7 @@ def compute_shap_values(region_key="BDF", **kwargs):
                     "description": f"Each extra 10 m² adds ~${per_m2 * 10:,.0f}",
                     "label": "Building Efficiency"
                 }
-
+                
             elif feature == "Age":
                 modern_threshold = 20
                 if age < modern_threshold:
@@ -774,7 +806,7 @@ def compute_shap_values(region_key="BDF", **kwargs):
                         "description": f"Older building (Age ≥ {modern_threshold}) reduces value by ${abs(sv):,.0f}",
                         "label": "Condition"
                     }
-
+                    
             elif feature == "Prox_Riverain":
                 if prox_riverain == 1:
                     shap_results[feature] = {
@@ -788,7 +820,7 @@ def compute_shap_values(region_key="BDF", **kwargs):
                         "description": f"Non-waterfront location: ${sv:,.0f} impact",
                         "label": "Premium Location"
                     }
-
+                    
             elif feature == "Etage":
                 if etage > 1:
                     shap_results[feature] = {
@@ -802,7 +834,7 @@ def compute_shap_values(region_key="BDF", **kwargs):
                         "description": f"Single floor: ${sv:,.0f} impact",
                         "label": "Floor Level"
                     }
-
+                    
             elif feature == "Aire_Lot":
                 per_m2 = (sv / aire_lot) if aire_lot > 0 else 0.0
                 shap_results[feature] = {
@@ -810,10 +842,10 @@ def compute_shap_values(region_key="BDF", **kwargs):
                     "description": f"Each extra 10 m² adds ~${per_m2 * 10:,.0f}",
                     "label": "Lot Size"
                 }
-
+        
             # For other features (e.g., PMR category/park/metro), you can add cases later.
         return shap_results
-
+        
     except Exception as e:
         st.warning(f"Could not compute SHAP values: {e}")
         return None
@@ -889,232 +921,45 @@ def main():
             st.metric("Features", "5 Raw Attributes", "Raw attributes for more relevant insights")
     
     elif page == "Property Valuation":
-        st.header(f"🏠 Property Valuation - {selected_region['name']}")
-        
-        # Check if models exist for this region
-        model_path = model_path_for(region_key, 0.5)
-        if not model_path.exists():
-            st.error(f"⚠️ Models for {selected_region['name']} need to be trained first. Please go to 'Model Performance' to train the models.")
-            return
-        
-        # Dynamic input fields based on region
-        with st.form("valuation_form"):
-            st.subheader("Enter Property Details")
-            
-            # Get region configuration
-            config = REGION_CONFIG[region_key]
-            feature_cols = config["feature_cols"]
-            num_cols = config["num_cols"]
-            cat_cols = config["cat_cols"]
-            
-            # Create input fields dynamically
-            input_values = {}
-            
-            # Split into two columns
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                for i, feature in enumerate(feature_cols[:len(feature_cols)//2 + 1]):
-                    if feature == "Etage":
-                        input_values[feature] = st.number_input("Floor", min_value=1, max_value=20, value=2)
-                    elif feature == "Age":
-                        input_values[feature] = st.number_input("Building Age (years)", min_value=0, max_value=100, value=15)
-                    elif feature == "Aire_Batiment":
-                        input_values[feature] = st.number_input("Building Area (m²)", min_value=20.0, max_value=1000.0, value=120.0, step=10.0)
-                    elif feature == "Aire_Lot":
-                        input_values[feature] = st.number_input("Lot Area (m²)", min_value=50.0, max_value=2000.0, value=300.0, step=50.0)
-                    elif feature == "Prox_Riverain":
-                        input_values[feature] = st.selectbox("Waterfront Proximity", options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
-                    elif feature == "Taxes_annuelles":
-                        input_values[feature] = st.number_input("Annual Taxes ($)", min_value=0.0, max_value=50000.0, value=3000.0, step=100.0)
-                    elif feature == "Category":
-                        # Load unique categories from PMR dataset
-                        try:
-                            df_pmr = load_region_dataframe_simple(region_key)
-                            categories = df_pmr["Category"].unique().tolist()
-                            input_values[feature] = st.selectbox("Category", options=categories)
-                        except:
-                            input_values[feature] = st.text_input("Category", value="Residential")
-                    elif feature in ["Near_A_Park", "Near_Metro_Station"]:
-                        input_values[feature] = st.selectbox(feature.replace("_", " "), options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
-            
-            with col2:
-                for feature in feature_cols[len(feature_cols)//2 + 1:]:
-                    if feature == "Etage":
-                        input_values[feature] = st.number_input("Floor", min_value=1, max_value=20, value=2)
-                    elif feature == "Age":
-                        input_values[feature] = st.number_input("Building Age (years)", min_value=0, max_value=100, value=15)
-                    elif feature == "Aire_Batiment":
-                        input_values[feature] = st.number_input("Building Area (m²)", min_value=20.0, max_value=1000.0, value=120.0, step=10.0)
-                    elif feature == "Aire_Lot":
-                        input_values[feature] = st.number_input("Lot Area (m²)", min_value=50.0, max_value=2000.0, value=300.0, step=50.0)
-                    elif feature == "Prox_Riverain":
-                        input_values[feature] = st.selectbox("Waterfront Proximity", options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
-                    elif feature == "Taxes_annuelles":
-                        input_values[feature] = st.number_input("Annual Taxes ($)", min_value=0.0, max_value=50000.0, value=3000.0, step=100.0)
-                    elif feature == "Category":
-                        try:
-                            df_pmr = load_region_dataframe_simple(region_key)
-                            categories = df_pmr["Category"].unique().tolist()
-                            input_values[feature] = st.selectbox("Category", options=categories)
-                        except:
-                            input_values[feature] = st.text_input("Category", value="Residential")
-                    elif feature in ["Near_A_Park", "Near_Metro_Station"]:
-                        input_values[feature] = st.selectbox(feature.replace("_", " "), options=[0, 1], format_func=lambda x: "No" if x == 0 else "Yes")
-            
-            submitted = st.form_submit_button("Get Valuation")
-            
-            if submitted:
+        if not models_available(region_key):
+            st.info("Models for this region are not available yet. Train locally using `python train_models.py`, then commit and push the generated files in `/models` on your working branch. After deployment, come back here to estimate.")
+            st.stop()
+
+        inputs, submitted, missing = build_input_form(region_key)
+        if submitted:
+            if missing:
+                st.error(f"Please provide all required inputs: {missing}")
+                st.stop()
+            # Load q05/q50/q95 and predict
+            try:
+                data50 = joblib.load(model_path_for(region_key, 0.5))
+                data05 = joblib.load(model_path_for(region_key, 0.05))
+                data95 = joblib.load(model_path_for(region_key, 0.95))
+                pipe50, feats = data50["pipeline"], data50["features"]
+                # Build DataFrame in feature order
+                X = pd.DataFrame([{f: inputs.get(f, 0) for f in feats}])
+                y50 = float(pipe50.predict(X)[0])
+                y05 = float(data05["pipeline"].predict(X)[0])
+                y95 = float(data95["pipeline"].predict(X)[0])
+
+                st.success(f"Estimated property value (median): ${y50:,.0f}")
+                st.write(f"Range (q05–q95): ${y05:,.0f} – ${y95:,.0f}")
+
+                # MAE if present
+                mae = data50.get("mae")
+                if mae is not None:
+                    st.caption(f"Model MAE (validation): ${mae:,.0f}")
+
+                # SHAP / Waterfall (keep your existing functions; wrap in try/except)
                 try:
-                    # Validate inputs
-                    if "Aire_Batiment" in input_values and input_values["Aire_Batiment"] <= 0:
-                        st.error("Please enter a valid building area.")
-                        return
-                    
-                    # Make prediction with region-aware function
-                    low, median, high = predict_with_models(region_key, **input_values)
-                    
-                    if low is None or median is None or high is None:
-                        st.error("Prediction failed. Please check if models are trained.")
-                        return
-                    
-                    # Get MAE for display
-                    mae = get_model_mae(region_key)
-                    
-                    # Calculate ratio for KPI
-                    ratio_result = find_nearest_neighbors_and_calculate_ratio(
-                        region_key=region_key, predicted_value=median, **input_values
-                    )
-                    
-                    # Display results
-                    st.markdown('<div class="prediction-card">', unsafe_allow_html=True)
-                    st.markdown(f"## Estimated Property Value")
-                    st.markdown(f"# ${median:,.0f}")
-                    if mae is not None:
-                        st.markdown(f"*MAE: ${mae:,.0f}*")
-                    st.markdown("</div>", unsafe_allow_html=True)
-                    
-                    # Add explanation about the model
-                    st.info("This model uses Gradient Boosting with Quantile Loss, a machine learning method that provides price predictions along with confidence ranges.")
-                    
-                    # Quantile breakdown
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Lower Bound")
-                        st.markdown(f"## $ {low:,.0f}")
-                        st.markdown("*5th percentile*")
-                        st.markdown("</div>", unsafe_allow_html=True)
-                    
-                    with col2:
-                        st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Median")
-                        st.markdown(f"## $ {median:,.0f}")
-                        st.markdown("*50th percentile*")
-                        st.markdown("</div>", unsafe_allow_html=True)
-                    
-                    with col3:
-                        st.markdown('<div class="quantile-card">', unsafe_allow_html=True)
-                        st.markdown("### Upper Bound")
-                        st.markdown(f"## $ {high:,.0f}")
-                        st.markdown("*95th percentile*")
-                        st.markdown("</div>", unsafe_allow_html=True)
-                    
-                    # SHAP Waterfall Chart
-                    st.subheader("Price Construction (SHAP Waterfall)")
-                    fig = create_shap_waterfall_chart(region_key=region_key, predicted_value=median, **input_values)
+                    fig = create_shap_waterfall_chart(region_key=region_key, predicted_value=y50, **inputs)
                     if fig:
                         st.plotly_chart(fig, use_container_width=True)
-                        st.info("💡 **Price Construction**: This chart starts from the dataset's average property value and shows how each attribute contributes positively or negatively to the final predicted price.")
-                    else:
-                        st.warning("Could not generate the price construction chart.")
-                    
-                    # Additional metrics
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        price_per_m2 = median / float(input_values.get("Aire_Batiment", 0) or 1)
-                        st.metric("Price per m²", f"${price_per_m2:,.0f}")
-                    
-                    with col2:
-                        if ratio_result:
-                            st.metric("Ratio Valuation vs Price", f"{ratio_result['ratio']:.2f}%")
-                            st.caption(f"Actual Price: ${ratio_result['actual_price']:,.0f}")
-                            if ratio_result['used_averaging']:
-                                st.caption(f"Average of {ratio_result['k']} similar properties")
-                        else:
-                            st.metric("Ratio Valuation vs Price", "N/A")
-                    
-                    with col3:
-                        if mae is not None:
-                            st.metric("Mean Absolute Error", f"${mae:,.0f}", "Average prediction error")
-                        else:
-                            st.metric("Mean Absolute Error", "N/A", "Not available")
-                    
-                    # Add helper text for the ratio KPI
-                    if ratio_result:
-                        st.info("💡 **Ratio Valuation vs Price**: This ratio compares the model's valuation to the closest known property or an average of similar properties in the dataset. 100% = perfect match, >100% = overestimation, <100% = underestimation.")
-
-                    
-                    # SHAP-based Property Analysis
-                    st.subheader("Property Analysis (SHAP values)")
-                    
-                    # Compute SHAP values for this specific property
-                    # SHAP values explain how each feature contributes to the prediction in dollars
-                    # Positive values increase the predicted price, negative values decrease it
-                    shap_results = compute_shap_values(region_key=region_key, **input_values)
-                    
-                    if shap_results:
-                        st.markdown('<div class="compact-info">💡 <strong>SHAP Analysis</strong>: Each value shows how much each feature contributes to the predicted price in dollars.</div>', unsafe_allow_html=True)
-                        
-                        # Maintain logical grouping but render as compact horizontal cards
-                        shap_sections = {
-                            "Building Efficiency": ["Aire_Batiment"],
-                            "Condition": ["Age"],
-                            "Premium Location": ["Prox_Riverain"],
-                            "Floor Level": ["Etage"],
-                            "Lot Size": ["Aire_Lot"]
-                        }
-                        
-                        cards_html_parts = []
-                        for section_name, features in shap_sections.items():
-                            for feature in features:
-                                if feature in shap_results:
-                                    result = shap_results[feature]
-                                    shap_val = float(result["shap_value"]) if hasattr(result["shap_value"], "__float__") else result["shap_value"]
-                                    desc = result["description"]
-                                    label = result.get("label", feature)
-                                    is_positive = shap_val >= 0
-                                    icon = "📈" if is_positive else "📉"
-                                    sign_class = "positive" if is_positive else "negative"
-                                    
-                                    # Map section names to theme-consistent CSS classes
-                                    section_class_map = {
-                                        "Building Efficiency": "building-efficiency",
-                                        "Condition": "condition", 
-                                        "Premium Location": "premium-location",
-                                        "Floor Level": "floor-level",
-                                        "Lot Size": "lot-size"
-                                    }
-                                    theme_class = section_class_map.get(section_name, "building-efficiency")
-                                    
-                                    cards_html_parts.append(
-                                        f"<div class='shap-card {theme_class} {sign_class}'>"
-                                        f"<h5>{label}</h5>"
-                                        f"<div class='value'>{icon} ${shap_val:,.0f}</div>"
-                                        f"<p class='desc'>{desc}</p>"
-                                        f"</div>"
-                                    )
-
-                        if cards_html_parts:
-                            cards_html = "".join(cards_html_parts)
-                            st.markdown(f"<div class='shap-card-grid'>{cards_html}</div>", unsafe_allow_html=True)
-                    else:
-                        st.warning("SHAP analysis could not be computed for this property.")
-                    
                 except Exception as e:
-                    st.error(f"An error occurred: {e}")
+                    st.warning(f"SHAP visualization unavailable: {e}")
+
+            except Exception as e:
+                st.error(f"Prediction failed: {e}")
     
 
     
@@ -1136,9 +981,6 @@ def main():
                     st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
                     st.markdown("*Average prediction error*")
                 
-                if "R2" in metrics:
-                    st.metric("R² Score", f"{metrics['R2']:.3f}")
-                    st.markdown("*Model fit quality*")
                 
                 # Temporary Model Downloads
                 st.subheader("Temporary Model Downloads (this branch only)")
