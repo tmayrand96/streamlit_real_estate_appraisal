@@ -38,16 +38,16 @@ REGION_CONFIG = {
         "name": "Plateau Mont-Royal",
         "data_path": DATA_DIR / "Dataset_PMR.csv",
         "feature_cols": ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE", "ETAGES", "AGE", "AIRE_HABITABLE", "TAXES_AN", "Prox_Parc", "Prox_Metro"],
-        "num_cols": ["ETAGES", "AGE", "AIRE_HABITABLE", "TAXES_AN", "Prox_Parc", "Prox_Metro"],
-        "cat_cols": ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"],
+        "num_cols": ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE", "ETAGES", "AGE", "AIRE_HABITABLE", "TAXES_AN", "Prox_Parc", "Prox_Metro"],
+        "cat_cols": [],
         "model_prefix": "pmr"
     },
     "Ste-Rose": {
         "name": "Sainte-Rose",
         "data_path": DATA_DIR / "Dataset_Ste-Rose.csv",
         "feature_cols": ["Etage", "Age", "Aire_Batiment_m2", "Aire_Lot_m2", "Garage", "Amenagement_paysager"],
-        "num_cols": ["Etage", "Age", "Aire_Batiment_m2", "Aire_Lot_m2"],
-        "cat_cols": ["Garage", "Amenagement_paysager"],
+        "num_cols": ["Etage", "Age", "Aire_Batiment_m2", "Aire_Lot_m2", "Garage", "Amenagement_paysager"],
+        "cat_cols": [],
         "model_prefix": "ste_rose"
     }
 }
@@ -85,30 +85,37 @@ def models_available(region_key: str):
 def build_input_form(region_key: str):
     """Build input form for a specific region and return inputs, submitted flag, and missing fields"""
     cfg = REGION_CONFIG[region_key]
-    num_cols = cfg["num_cols"]
-    cat_cols = cfg["cat_cols"]
+    num_cols = [c for c in cfg["num_cols"] if c in cfg["feature_cols"]]
+    cat_cols = [c for c in cfg["cat_cols"] if c in cfg["feature_cols"]]
     inputs = {}
+
     with st.form("valuation_inputs", clear_on_submit=False):
         st.subheader("Enter property attributes")
-        # numeric inputs
+        
+        # number inputs: use step=10 for size-like fields
         for col in num_cols:
-            # sensible defaults
-            minv = 0.0 if col.lower()!="age" else 0
-            step = 1.0 if col.lower()=="age" or col.lower()=="etage" else 1.0
+            step = 10.0 if any(k in col.lower() for k in ["aire", "m2", "lot"]) else 1.0
+            minv = 0.0 if "age" not in col.lower() else 0.0
             val = st.number_input(col, min_value=float(minv), step=float(step))
             inputs[col] = val
-        # categorical inputs
-        for col in cat_cols:
-            if region_key=="PMR" and col in ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]:
-                choice = st.selectbox(col, ["0","1"])
-                inputs[col] = int(choice)
-            else:
-                choice = st.selectbox(col, ["0","1"])
-                inputs[col] = int(choice)
-        submit = st.form_submit_button("Estimate Value")
-    # basic validation: ensure all required keys are present
-    missing = [c for c in cfg["feature_cols"] if c not in inputs or inputs[c] in [None, ""]]
-    return inputs, submit, missing
+
+        # categorical:
+        if region_key == "PMR" and "Category" in cat_cols:
+            choice = st.selectbox("Category", ["CONDO","5PLEX_ET_MOINS","6PLEX_ET_PLUS","UNIFAMILIALE"])
+            inputs["Category"] = choice
+            # PMR has extra binary 0/1 columns in num_cols already (Prox_Parc/Prox_Metro) so no separate yes/no here.
+        else:
+            # For other regions' binary flags included in num_cols, convert Yes/No to 1/0
+            # Detect typical binary names present in feature_cols
+            bin_like = [c for c in cfg["feature_cols"] if c.lower() in ["prox_riverain","garage","amenagement_paysager","prox_parc","prox_metro"] and c not in cat_cols]
+            for b in bin_like:
+                yn = st.selectbox(b, ["No","Yes"])
+                inputs[b] = 1 if yn == "Yes" else 0
+
+        submitted = st.form_submit_button("Estimate Value")
+    
+    missing = [c for c in cfg["feature_cols"] if c not in inputs or inputs[c] in [None,""]]
+    return inputs, submitted, missing
 
 # Legacy compatibility - load BDF models if they exist
 try:
@@ -343,11 +350,11 @@ def create_features(df, region_key="BDF", is_training=True):
                 if df[col].dtype == 'object':
                     df[col] = df[col].map({'Yes': 1, 'No': 0, 'True': 1, 'False': 0, True: 1, False: 0}).fillna(0)
     
-    if not is_training:
+    if is_training:
+        return df  # keep target
+    else:
         df = df.fillna(0)
-    
-    # Return only the features needed by this region
-    return df[adapted_feature_cols]
+        return df[[c for c in config["feature_cols"] if c in df.columns]]
 
 def train_quantile_models(region_key="BDF"):
     """Train quantile regression models for a specific region using sklearn Pipeline"""
