@@ -467,7 +467,7 @@ def predict_with_models(region_key="BDF", **kwargs):
     for alpha in [0.05, 0.50, 0.95]:
         path = model_path_for(region_key, alpha)
         try:
-        data = joblib.load(path)
+            data = joblib.load(path)
             pipe = data["pipeline"]
             preds[alpha] = float(pipe.predict(inputs)[0])
         except FileNotFoundError:
@@ -681,6 +681,7 @@ def find_nearest_neighbors_and_calculate_ratio(region_key="BDF", predicted_value
         features = data["features"]
         
         # Prepare input data
+        config = REGION_CONFIG[region_key]
         inputs_dict = {}
         for col in config["feature_cols"]:
             if col in kwargs:
@@ -933,7 +934,7 @@ def main():
             st.stop()
 
         inputs, submitted, missing = build_input_form(region_key)
-            if submitted:
+        if submitted:
             if missing:
                 st.error(f"Please provide all required inputs: {missing}")
                 st.stop()
@@ -954,7 +955,7 @@ def main():
 
                 # MAE if present
                 mae = data50.get("mae")
-                    if mae is not None:
+                if mae is not None:
                     st.caption(f"Model MAE (validation): ${mae:,.0f}")
 
                 # SHAP / Waterfall (keep your existing functions; wrap in try/except)
@@ -965,7 +966,7 @@ def main():
                 except Exception as e:
                     st.warning(f"SHAP visualization unavailable: {e}")
                     
-                except Exception as e:
+            except Exception as e:
                 st.error(f"Prediction failed: {e}")
     
 
@@ -985,8 +986,8 @@ def main():
                 
                 # Display metrics
                 if "MAE" in metrics:
-                st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
-                st.markdown("*Average prediction error*")
+                    st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
+                    st.markdown("*Average prediction error*")
                 
                 
                 # Temporary Model Downloads
