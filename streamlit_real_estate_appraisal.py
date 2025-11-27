@@ -355,12 +355,12 @@ def create_features(df, region_key="BDF", is_training=True):
     else:
         df = df.fillna(0)
         return df[[c for c in config["feature_cols"] if c in df.columns]]
-
+    
 def train_quantile_models(region_key="BDF"):
     """Train quantile regression models for a specific region using sklearn Pipeline"""
     config = REGION_CONFIG[region_key]
     csv_path = config["data_path"]
-    
+
     if not csv_path.exists():
         raise FileNotFoundError(f"Dataset introuvable : {csv_path}")
     
@@ -467,7 +467,7 @@ def predict_with_models(region_key="BDF", **kwargs):
     for alpha in [0.05, 0.50, 0.95]:
         path = model_path_for(region_key, alpha)
         try:
-            data = joblib.load(path)
+        data = joblib.load(path)
             pipe = data["pipeline"]
             preds[alpha] = float(pipe.predict(inputs)[0])
         except FileNotFoundError:
@@ -933,7 +933,7 @@ def main():
             st.stop()
 
         inputs, submitted, missing = build_input_form(region_key)
-        if submitted:
+            if submitted:
             if missing:
                 st.error(f"Please provide all required inputs: {missing}")
                 st.stop()
@@ -954,7 +954,7 @@ def main():
 
                 # MAE if present
                 mae = data50.get("mae")
-                if mae is not None:
+                    if mae is not None:
                     st.caption(f"Model MAE (validation): ${mae:,.0f}")
 
                 # SHAP / Waterfall (keep your existing functions; wrap in try/except)
@@ -964,8 +964,8 @@ def main():
                         st.plotly_chart(fig, use_container_width=True)
                 except Exception as e:
                     st.warning(f"SHAP visualization unavailable: {e}")
-
-            except Exception as e:
+                    
+                except Exception as e:
                 st.error(f"Prediction failed: {e}")
     
 
@@ -985,8 +985,8 @@ def main():
                 
                 # Display metrics
                 if "MAE" in metrics:
-                    st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
-                    st.markdown("*Average prediction error*")
+                st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
+                st.markdown("*Average prediction error*")
                 
                 
                 # Temporary Model Downloads
