@@ -92,6 +92,19 @@ def build_input_form(region_key: str):
     with st.form("valuation_inputs", clear_on_submit=False):
         st.subheader("Enter property attributes")
         
+        # For PMR, handle Property_Type as categorical input (replaces CONDO, 5PLEX_ET_MOINS, etc.)
+        if region_key == "PMR":
+            # Property_Type categorical input
+            property_type_choice = st.selectbox(
+                "Property_Type",
+                ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"],
+                help="Select the property type"
+            )
+            inputs["Property_Type"] = property_type_choice
+            # Exclude old property type columns from numeric inputs
+            exclude_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+            num_cols = [c for c in num_cols if c not in exclude_cols]
+        
         # number inputs: use step=10 for size-like fields
         for col in num_cols:
             step = 10.0 if any(k in col.lower() for k in ["aire", "m2", "lot"]) else 1.0
@@ -114,7 +127,14 @@ def build_input_form(region_key: str):
 
         submitted = st.form_submit_button("Estimate Value")
     
-    missing = [c for c in cfg["feature_cols"] if c not in inputs or inputs[c] in [None,""]]
+    # For PMR with Property_Type, adjust missing check to account for Property_Type instead of old columns
+    if region_key == "PMR" and "Property_Type" in inputs:
+        # Property_Type replaces the old property type columns
+        exclude_from_missing = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+        missing = [c for c in cfg["feature_cols"] if c not in inputs or inputs.get(c) in [None,""]]
+        missing = [c for c in missing if c not in exclude_from_missing]
+    else:
+        missing = [c for c in cfg["feature_cols"] if c not in inputs or inputs.get(c) in [None,""]]
     return inputs, submitted, missing
 
 # Legacy compatibility - load BDF models if they exist
@@ -350,11 +370,34 @@ def create_features(df, region_key="BDF", is_training=True):
                 if df[col].dtype == 'object':
                     df[col] = df[col].map({'Yes': 1, 'No': 0, 'True': 1, 'False': 0, True: 1, False: 0}).fillna(0)
     
+    # One-hot encode Property_Type if it exists (for PMR or any region)
+    if "Property_Type" in df.columns:
+        # Define all possible Property_Type values to ensure consistent dummy columns
+        possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+        # One-hot encode Property_Type into dummy columns
+        dummies = pd.get_dummies(df["Property_Type"], prefix="Property_Type")
+        # Ensure all possible dummy columns exist (add missing ones with 0)
+        for prop_type in possible_types:
+            dummy_col = f"Property_Type_{prop_type}"
+            if dummy_col not in dummies.columns:
+                dummies[dummy_col] = 0
+        # Drop the original categorical column and concatenate dummies
+        df = pd.concat([df.drop(columns=["Property_Type"]), dummies], axis=1)
+        # Remove any original property type indicator columns that might conflict
+        original_prop_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+        for col in original_prop_cols:
+            if col in df.columns:
+                df = df.drop(columns=[col])
+    
     if is_training:
         return df  # keep target
     else:
         df = df.fillna(0)
-        return df[[c for c in config["feature_cols"] if c in df.columns]]
+        # For prediction, return all columns except target (to match training feature_cols)
+        if CANON_TARGET in df.columns:
+            return df[[c for c in df.columns if c != CANON_TARGET]]
+        else:
+            return df
     
 def train_quantile_models(region_key="BDF"):
     """Train quantile regression models for a specific region using sklearn Pipeline"""
@@ -371,8 +414,18 @@ def train_quantile_models(region_key="BDF"):
             raise ValueError(f"[{config['name']}] Target '{CANON_TARGET}' missing after feature prep. Columns: {list(df.columns)}")
         df = df.dropna(subset=[CANON_TARGET])
 
-        # Use ONLY the configured features that are present
-        feature_cols = [c for c in config["feature_cols"] if c in df.columns]
+        # Property_Type is already one-hot encoded by create_features
+        # Identify Property_Type dummy columns that were created
+        property_type_dummy_cols = [c for c in df.columns if c.startswith("Property_Type_")]
+
+        # Use programmatic feature_cols: all columns except the target
+        feature_cols = [c for c in df.columns if c != CANON_TARGET]
+        
+        # Remove any original property type indicator columns that might conflict
+        # (they should have been removed by create_features, but check to be safe)
+        original_prop_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+        feature_cols = [c for c in feature_cols if c not in original_prop_cols]
+        
         if not feature_cols:
             raise ValueError(f"[{config['name']}] No usable features. Columns: {list(df.columns)}")
 
@@ -380,7 +433,10 @@ def train_quantile_models(region_key="BDF"):
         y = df[CANON_TARGET].astype(float)
 
     # Build preprocessing pipeline
+    # Include Property_Type dummy columns as numeric (they're 0/1)
     num_cols = [col for col in config["num_cols"] if col in feature_cols]
+    if property_type_dummy_cols:
+        num_cols.extend([col for col in property_type_dummy_cols if col in feature_cols])
     cat_cols = [col for col in config["cat_cols"] if col in feature_cols]
     
     # Create transformers
@@ -442,26 +498,55 @@ def train_quantile_models(region_key="BDF"):
 
 def predict_with_models(region_key="BDF", **kwargs):
     """Make predictions using all three quantile models for a specific region"""
-    # Prepare inputs based on region
-    config = REGION_CONFIG[region_key]
-    feature_cols = config["feature_cols"]
+    # Load one model to get the feature columns (they should be the same for all quantiles)
+    path = model_path_for(region_key, 0.5)
+    try:
+        data = joblib.load(path)
+        feats = data["features"]  # Get feature columns from model metadata
+    except FileNotFoundError:
+        st.error(f"Model not found for {region_key}. Please train models first.")
+        return None, None, None
     
-    # Create input DataFrame with all possible features
-    inputs_dict = {}
-    for col in feature_cols:
-        if col in kwargs:
-            inputs_dict[col] = kwargs[col]
+    # Prepare inputs - separate Property_Type from other features
+    base_input = {}
+    property_type_value = None
+    
+    for key, value in kwargs.items():
+        if key == "Property_Type":
+            property_type_value = value
         else:
-            # Default values for missing features
-            if col in config["num_cols"]:
-                inputs_dict[col] = 0
-            elif col in config["cat_cols"]:
-                inputs_dict[col] = "__missing__"
-            else:
-                inputs_dict[col] = 0
+            base_input[key] = value
     
-    inputs = pd.DataFrame([inputs_dict])
-    inputs = create_features(inputs, region_key, is_training=False)
+    # Create base DataFrame with numeric features
+    inputs = pd.DataFrame([base_input])
+    
+    # One-hot encode Property_Type if it exists and model expects Property_Type dummies
+    has_property_type_dummies = any(col.startswith("Property_Type_") for col in feats)
+    
+    if property_type_value is not None and has_property_type_dummies:
+        # Create a temporary DataFrame with the property type
+        temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+        
+        # One-hot encode using the same pattern as training
+        type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+        
+        # Ensure all possible Property_Type dummy columns exist
+        possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+        for prop_type in possible_types:
+            dummy_col = f"Property_Type_{prop_type}"
+            if dummy_col not in type_dummies.columns:
+                type_dummies[dummy_col] = 0
+        
+        # Merge these dummies into the main input row
+        inputs = pd.concat([inputs, type_dummies], axis=1)
+    
+    # Align inputs columns with feature_cols from training
+    for col in feats:
+        if col not in inputs.columns:
+            inputs[col] = 0
+    
+    # Ensure the column order matches training exactly
+    inputs = inputs[feats]
 
     preds = {}
     for alpha in [0.05, 0.50, 0.95]:
@@ -515,21 +600,46 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
         features = data["features"]
         
         # Prepare single-row input as used by the model
-        config = REGION_CONFIG[region_key]
-        inputs_dict = {}
-        for col in config["feature_cols"]:
-            if col in kwargs:
-                inputs_dict[col] = kwargs[col]
+        # Separate Property_Type from other features
+        base_input = {}
+        property_type_value = None
+        
+        for key, value in kwargs.items():
+            if key == "Property_Type":
+                property_type_value = value
             else:
-                if col in config["num_cols"]:
-                    inputs_dict[col] = 0
-                elif col in config["cat_cols"]:
-                    inputs_dict[col] = "__missing__"
-                else:
-                    inputs_dict[col] = 0
-
-        inputs = pd.DataFrame([inputs_dict])
-        inputs = create_features(inputs, region_key, is_training=False)
+                base_input[key] = value
+        
+        # Create base DataFrame with numeric features
+        inputs = pd.DataFrame([base_input])
+        
+        # One-hot encode Property_Type if it exists and model expects Property_Type dummies
+        has_property_type_dummies = any(col.startswith("Property_Type_") for col in features)
+        
+        if property_type_value is not None and has_property_type_dummies:
+            # Create a temporary DataFrame with the property type
+            temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+            
+            # One-hot encode using the same pattern as training
+            type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+            
+            # Ensure all possible Property_Type dummy columns exist
+            possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+            for prop_type in possible_types:
+                dummy_col = f"Property_Type_{prop_type}"
+                if dummy_col not in type_dummies.columns:
+                    type_dummies[dummy_col] = 0
+            
+            # Merge these dummies into the main input row
+            inputs = pd.concat([inputs, type_dummies], axis=1)
+        
+        # Align inputs columns with feature_cols from training
+        for col in features:
+            if col not in inputs.columns:
+                inputs[col] = 0
+        
+        # Ensure the column order matches training exactly
+        inputs = inputs[features]
 
         # Transform input and sample a background set in model's feature space
         X_transformed = pipe.named_steps["preproc"].transform(inputs)
@@ -680,22 +790,46 @@ def find_nearest_neighbors_and_calculate_ratio(region_key="BDF", predicted_value
         pipe = data["pipeline"]
         features = data["features"]
         
-        # Prepare input data
-        config = REGION_CONFIG[region_key]
-        inputs_dict = {}
-        for col in config["feature_cols"]:
-            if col in kwargs:
-                inputs_dict[col] = kwargs[col]
-            else:
-                if col in config["num_cols"]:
-                    inputs_dict[col] = 0
-                elif col in config["cat_cols"]:
-                    inputs_dict[col] = "__missing__"
-                else:
-                    inputs_dict[col] = 0
+        # Prepare input data - separate Property_Type from other features
+        base_input = {}
+        property_type_value = None
         
-        inputs = pd.DataFrame([inputs_dict])
-        inputs = create_features(inputs, region_key, is_training=False)
+        for key, value in kwargs.items():
+            if key == "Property_Type":
+                property_type_value = value
+            else:
+                base_input[key] = value
+        
+        # Create base DataFrame with numeric features
+        inputs = pd.DataFrame([base_input])
+        
+        # One-hot encode Property_Type if it exists and model expects Property_Type dummies
+        has_property_type_dummies = any(col.startswith("Property_Type_") for col in features)
+        
+        if property_type_value is not None and has_property_type_dummies:
+            # Create a temporary DataFrame with the property type
+            temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+            
+            # One-hot encode using the same pattern as training
+            type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+            
+            # Ensure all possible Property_Type dummy columns exist
+            possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+            for prop_type in possible_types:
+                dummy_col = f"Property_Type_{prop_type}"
+                if dummy_col not in type_dummies.columns:
+                    type_dummies[dummy_col] = 0
+            
+            # Merge these dummies into the main input row
+            inputs = pd.concat([inputs, type_dummies], axis=1)
+        
+        # Align inputs columns with feature_cols from training
+        for col in features:
+            if col not in inputs.columns:
+                inputs[col] = 0
+        
+        # Ensure the column order matches training exactly
+        inputs = inputs[features]
         
         # Transform using pipeline preprocessor
         X_transformed = pipe.named_steps["preproc"].transform(inputs)
@@ -705,8 +839,12 @@ def find_nearest_neighbors_and_calculate_ratio(region_key="BDF", predicted_value
         
         # Check for exact match first in original feature space
         exact_match = df.copy()
+        # Handle Property_Type separately if it exists
+        if "Property_Type" in kwargs and "Property_Type" in df.columns:
+            exact_match = exact_match[exact_match["Property_Type"] == kwargs["Property_Type"]]
+        # Check other features
         for col in config["feature_cols"]:
-            if col in kwargs:
+            if col in kwargs and col in exact_match.columns:
                 exact_match = exact_match[exact_match[col] == kwargs[col]]
         
         if len(exact_match) > 0:
@@ -752,29 +890,53 @@ def compute_shap_values(region_key="BDF", **kwargs):
         pipe = data["pipeline"]
         features = data["features"]
         
-        # Build input row
-        config = REGION_CONFIG[region_key]
-        inputs_dict = {}
-        for col in config["feature_cols"]:
-            if col in kwargs:
-                inputs_dict[col] = kwargs[col]
+        # Build input row - separate Property_Type from other features
+        base_input = {}
+        property_type_value = None
+        
+        for key, value in kwargs.items():
+            if key == "Property_Type":
+                property_type_value = value
             else:
-                if col in config["num_cols"]:
-                    inputs_dict[col] = 0
-                elif col in config["cat_cols"]:
-                    inputs_dict[col] = "__missing__"
-                else:
-                    inputs_dict[col] = 0
+                base_input[key] = value
 
         # Keep some raw values for explanations
-        aire_batiment = float(inputs_dict.get("Aire_Batiment", 0) or 0)
-        aire_lot = float(inputs_dict.get("Aire_Lot", 0) or 0)
-        age = float(inputs_dict.get("Age", 0) or 0)
-        etage = float(inputs_dict.get("Etage", 0) or 0)
-        prox_riverain = int(inputs_dict.get("Prox_Riverain", 0) or 0)
+        aire_batiment = float(base_input.get("Aire_Batiment", 0) or 0)
+        aire_lot = float(base_input.get("Aire_Lot", 0) or 0)
+        age = float(base_input.get("Age", 0) or 0)
+        etage = float(base_input.get("Etage", 0) or 0)
+        prox_riverain = int(base_input.get("Prox_Riverain", 0) or 0)
 
-        inputs = pd.DataFrame([inputs_dict])
-        inputs = create_features(inputs, region_key, is_training=False)
+        # Create base DataFrame with numeric features
+        inputs = pd.DataFrame([base_input])
+        
+        # One-hot encode Property_Type if it exists and model expects Property_Type dummies
+        has_property_type_dummies = any(col.startswith("Property_Type_") for col in features)
+        
+        if property_type_value is not None and has_property_type_dummies:
+            # Create a temporary DataFrame with the property type
+            temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+            
+            # One-hot encode using the same pattern as training
+            type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+            
+            # Ensure all possible Property_Type dummy columns exist
+            possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+            for prop_type in possible_types:
+                dummy_col = f"Property_Type_{prop_type}"
+                if dummy_col not in type_dummies.columns:
+                    type_dummies[dummy_col] = 0
+            
+            # Merge these dummies into the main input row
+            inputs = pd.concat([inputs, type_dummies], axis=1)
+        
+        # Align inputs columns with feature_cols from training
+        for col in features:
+            if col not in inputs.columns:
+                inputs[col] = 0
+        
+        # Ensure the column order matches training exactly
+        inputs = inputs[features]
         X_transformed = pipe.named_steps["preproc"].transform(inputs)
 
         # Background
@@ -943,12 +1105,56 @@ def main():
                 data50 = joblib.load(model_path_for(region_key, 0.5))
                 data05 = joblib.load(model_path_for(region_key, 0.05))
                 data95 = joblib.load(model_path_for(region_key, 0.95))
-                pipe50, feats = data50["pipeline"], data50["features"]
-                # Build DataFrame in feature order
-                X = pd.DataFrame([{f: inputs.get(f, 0) for f in feats}])
-                y50 = float(pipe50.predict(X)[0])
-                y05 = float(data05["pipeline"].predict(X)[0])
-                y95 = float(data95["pipeline"].predict(X)[0])
+                pipe50 = data50["pipeline"]
+                feats = data50["features"]  # Get feature columns from model metadata
+                
+                # Build base input dict with numeric features (excluding Property_Type for now)
+                base_input = {}
+                property_type_value = None
+                
+                for key, value in inputs.items():
+                    if key == "Property_Type":
+                        property_type_value = value
+                    else:
+                        base_input[key] = value
+                
+                # Create base DataFrame with numeric features
+                X_input = pd.DataFrame([base_input])
+                
+                # One-hot encode Property_Type if it exists (for PMR or any region with Property_Type)
+                # Check if Property_Type dummy columns are expected in the model features
+                has_property_type_dummies = any(col.startswith("Property_Type_") for col in feats)
+                
+                if property_type_value is not None and has_property_type_dummies:
+                    # Create a temporary DataFrame with the property type
+                    temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+                    
+                    # One-hot encode using the same pattern as training
+                    type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+                    
+                    # Ensure all possible Property_Type dummy columns exist (add missing ones with 0)
+                    # Use the same possible types as in training
+                    possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+                    for prop_type in possible_types:
+                        dummy_col = f"Property_Type_{prop_type}"
+                        if dummy_col not in type_dummies.columns:
+                            type_dummies[dummy_col] = 0
+                    
+                    # Merge these dummies into the main input row
+                    X_input = pd.concat([X_input, type_dummies], axis=1)
+                
+                # Align X_input columns with feature_cols from training
+                # Add any missing columns (e.g., some dummy types not present for that selection) with 0
+                for col in feats:
+                    if col not in X_input.columns:
+                        X_input[col] = 0
+                
+                # Ensure the column order matches training exactly
+                X_input = X_input[feats]
+                
+                y50 = float(pipe50.predict(X_input)[0])
+                y05 = float(data05["pipeline"].predict(X_input)[0])
+                y95 = float(data95["pipeline"].predict(X_input)[0])
 
                 st.success(f"Estimated property value (median): ${y50:,.0f}")
                 st.write(f"Range (q05–q95): ${y05:,.0f} – ${y95:,.0f}")
