@@ -92,49 +92,122 @@ def build_input_form(region_key: str):
     with st.form("valuation_inputs", clear_on_submit=False):
         st.subheader("Enter property attributes")
         
-        # For PMR, handle Property_Type as categorical input (replaces CONDO, 5PLEX_ET_MOINS, etc.)
-        if region_key == "PMR":
-            # Property_Type categorical input
-            property_type_choice = st.selectbox(
-                "Property_Type",
-                ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"],
-                help="Select the property type"
-            )
-            inputs["Property_Type"] = property_type_choice
-            # Exclude old property type columns from numeric inputs
-            exclude_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
-            num_cols = [c for c in num_cols if c not in exclude_cols]
+        # Region-specific input handling
+        if region_key == "BDF":
+            # BDF: Remove Prox_Riverain from numeric inputs (will be handled as Yes/No)
+            num_cols = [c for c in num_cols if c != "Prox_Riverain"]
+            
+            # Label mapping for BDF
+            label_map = {
+                "Etage": "Floor(s)",
+                "Age": "Age",
+                "Aire_Batiment": "Building Area (m2)",
+                "Aire_Lot": "Lot Area (m2)"
+            }
+            
+            # Numeric inputs with renamed labels
+            for col in num_cols:
+                label = label_map.get(col, col)
+                step = 10.0 if any(k in col.lower() for k in ["aire", "m2", "lot"]) else 1.0
+                minv = 0.0
+                val = st.number_input(label, min_value=float(minv), step=float(step), key=f"bdf_{col}")
+                inputs[col] = val
+            
+            # Waterfront Proximity as Yes/No (single input, no duplicate)
+            prox_riverain_choice = st.selectbox("Waterfront Proximity", ["No", "Yes"], key="bdf_prox_riverain")
+            inputs["Prox_Riverain"] = 1 if prox_riverain_choice == "Yes" else 0
         
-        # number inputs: use step=10 for size-like fields
-        for col in num_cols:
-            step = 10.0 if any(k in col.lower() for k in ["aire", "m2", "lot"]) else 1.0
-            minv = 0.0 if "age" not in col.lower() else 0.0
-            val = st.number_input(col, min_value=float(minv), step=float(step))
-            inputs[col] = val
-
-        # categorical:
-        if region_key == "PMR" and "Category" in cat_cols:
-            choice = st.selectbox("Category", ["CONDO","5PLEX_ET_MOINS","6PLEX_ET_PLUS","UNIFAMILIALE"])
-            inputs["Category"] = choice
-            # PMR has extra binary 0/1 columns in num_cols already (Prox_Parc/Prox_Metro) so no separate yes/no here.
+        elif region_key == "PMR":
+            # PMR: Property Type with UI-friendly labels mapped to internal values
+            property_type_ui = st.selectbox(
+                "Property Type",
+                ["Condo", "Plex", "SFH"],
+                help="Select the property type",
+                key="pmr_property_type"
+            )
+            # Map UI values to internal model values
+            property_type_map = {
+                "Condo": "CONDO",
+                "Plex": "5PLEX_ET_MOINS",  # Map Plex to 5PLEX_ET_MOINS
+                "SFH": "UNIFAMILIALE"
+            }
+            inputs["Property_Type"] = property_type_map[property_type_ui]
+            
+            # Exclude property type columns and TAXES_AN from numeric inputs
+            exclude_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE", "TAXES_AN", "Prox_Parc", "Prox_Metro"]
+            num_cols = [c for c in num_cols if c not in exclude_cols]
+            
+            # Label mapping for PMR numeric inputs
+            label_map = {
+                "ETAGES": "Floor(s)",
+                "AGE": "Age",
+                "AIRE_HABITABLE": "Building Area (m2)"
+            }
+            
+            # Numeric inputs with renamed labels
+            for col in num_cols:
+                label = label_map.get(col, col)
+                step = 10.0 if any(k in col.lower() for k in ["aire", "m2", "lot"]) else 1.0
+                minv = 0.0
+                val = st.number_input(label, min_value=float(minv), step=float(step), key=f"pmr_{col}")
+                inputs[col] = val
+            
+            # Park Proximity as Yes/No (single input, no duplicate)
+            prox_parc_choice = st.selectbox("Park Proximity", ["No", "Yes"], key="pmr_prox_parc")
+            inputs["Prox_Parc"] = 1 if prox_parc_choice == "Yes" else 0
+            
+            # Metro Proximity as Yes/No (single input, no duplicate)
+            prox_metro_choice = st.selectbox("Metro Proximity", ["No", "Yes"], key="pmr_prox_metro")
+            inputs["Prox_Metro"] = 1 if prox_metro_choice == "Yes" else 0
+        
+        elif region_key == "Ste-Rose":
+            # Ste-Rose: Remove Garage and Amenagement_paysager from numeric inputs (will be handled as Yes/No)
+            num_cols = [c for c in num_cols if c not in ["Garage", "Amenagement_paysager"]]
+            
+            # Label mapping for Ste-Rose
+            label_map = {
+                "Etage": "Floor(s)",
+                "Age": "Age",
+                "Aire_Batiment_m2": "Building Area (m2)",
+                "Aire_Lot_m2": "Lot Area (m2)"
+            }
+            
+            # Numeric inputs with renamed labels
+            for col in num_cols:
+                label = label_map.get(col, col)
+                step = 10.0 if any(k in col.lower() for k in ["aire", "m2", "lot"]) else 1.0
+                minv = 0.0
+                val = st.number_input(label, min_value=float(minv), step=float(step), key=f"ste_rose_{col}")
+                inputs[col] = val
+            
+            # Garage as Yes/No (single input, no duplicate)
+            garage_choice = st.selectbox("Garage", ["No", "Yes"], key="ste_rose_garage")
+            inputs["Garage"] = 1 if garage_choice == "Yes" else 0
+            
+            # Landscaping as Yes/No (single input, no duplicate)
+            landscaping_choice = st.selectbox("Landscaping", ["No", "Yes"], key="ste_rose_landscaping")
+            inputs["Amenagement_paysager"] = 1 if landscaping_choice == "Yes" else 0
+        
         else:
-            # For other regions' binary flags included in num_cols, convert Yes/No to 1/0
-            # Detect typical binary names present in feature_cols
-            bin_like = [c for c in cfg["feature_cols"] if c.lower() in ["prox_riverain","garage","amenagement_paysager","prox_parc","prox_metro"] and c not in cat_cols]
-            for b in bin_like:
-                yn = st.selectbox(b, ["No","Yes"])
-                inputs[b] = 1 if yn == "Yes" else 0
+            # Fallback for any other regions: use default behavior
+            for col in num_cols:
+                step = 10.0 if any(k in col.lower() for k in ["aire", "m2", "lot"]) else 1.0
+                minv = 0.0 if "age" not in col.lower() else 0.0
+                val = st.number_input(col, min_value=float(minv), step=float(step))
+                inputs[col] = val
 
         submitted = st.form_submit_button("Estimate Value")
     
-    # For PMR with Property_Type, adjust missing check to account for Property_Type instead of old columns
+    # Check for missing required fields
     if region_key == "PMR" and "Property_Type" in inputs:
         # Property_Type replaces the old property type columns
-        exclude_from_missing = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+        # Also exclude TAXES_AN from missing check (it's not in UI but may be in feature_cols)
+        exclude_from_missing = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE", "TAXES_AN"]
         missing = [c for c in cfg["feature_cols"] if c not in inputs or inputs.get(c) in [None,""]]
         missing = [c for c in missing if c not in exclude_from_missing]
     else:
         missing = [c for c in cfg["feature_cols"] if c not in inputs or inputs.get(c) in [None,""]]
+    
     return inputs, submitted, missing
 
 # Legacy compatibility - load BDF models if they exist
