@@ -1327,6 +1327,137 @@ def main():
                     
             except Exception as e:
                 st.warning(f"Model files exist but may be corrupted: {e}. Please retrain.")
+            
+            # PMR-specific evaluation: Overall MAE and MAE by Property Type
+            if region_key == "PMR" and model_path.exists():
+                try:
+                    st.divider()
+                    st.subheader("PMR – Overall MAE and MAE by Property Type")
+                    
+                    # Load raw PMR data
+                    pmr_config = REGION_CONFIG["PMR"]
+                    pmr_csv_path = pmr_config["data_path"]
+                    
+                    if not pmr_csv_path.exists():
+                        st.warning(f"PMR dataset not found at {pmr_csv_path}")
+                    else:
+                        # Load raw data
+                        df_raw = load_region_dataframe_simple("PMR")
+                        
+                        # Preserve original Property_Type for grouping (before preprocessing)
+                        if "Property_Type" not in df_raw.columns:
+                            # If Property_Type doesn't exist, try to infer from old indicator columns
+                            prop_type_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+                            available_prop_cols = [col for col in prop_type_cols if col in df_raw.columns]
+                            
+                            if available_prop_cols:
+                                # Create Property_Type from old indicator columns
+                                # Use idxmax to find which column has value 1 (they should be mutually exclusive)
+                                prop_type_df = df_raw[available_prop_cols]
+                                df_raw["Property_Type"] = prop_type_df.idxmax(axis=1)
+                                # Handle cases where all columns are 0 (default to UNIFAMILIALE)
+                                df_raw.loc[prop_type_df.sum(axis=1) == 0, "Property_Type"] = "UNIFAMILIALE"
+                        
+                        # Store Property_Type for later grouping
+                        property_type_original = df_raw["Property_Type"].copy() if "Property_Type" in df_raw.columns else None
+                        
+                        # Identify target column
+                        target_col = CANON_TARGET
+                        if target_col not in df_raw.columns:
+                            # Try alternative names
+                            for alt in ["Prix_de_Vente", "prix_de_vente", "Prix", "Price", "price_sold"]:
+                                if alt in df_raw.columns:
+                                    df_raw = df_raw.rename(columns={alt: target_col})
+                                    break
+                        
+                        if target_col not in df_raw.columns:
+                            st.error(f"Target column '{target_col}' not found in PMR dataset. Available columns: {list(df_raw.columns)}")
+                        else:
+                            # Apply same preprocessing as in training
+                            df_proc = create_features(df_raw.copy(), region_key="PMR", is_training=True)
+                            
+                            # Drop rows with missing target
+                            df_proc = df_proc.dropna(subset=[target_col])
+                            if property_type_original is not None:
+                                property_type_original = property_type_original.loc[df_proc.index]
+                            
+                            # Load PMR Q50 model
+                            pmr_model_path = model_path_for("PMR", 0.5)
+                            model_data = joblib.load(pmr_model_path)
+                            pipe = model_data["pipeline"]
+                            feature_cols = model_data["features"]
+                            
+                            # Prepare X and y
+                            y_true = df_proc[target_col].astype(float)
+                            
+                            # Ensure df_proc has all feature columns expected by the model
+                            for col in feature_cols:
+                                if col not in df_proc.columns:
+                                    df_proc[col] = 0
+                            
+                            # Select features in the correct order
+                            X = df_proc[feature_cols]
+                            
+                            # Make predictions using the pipeline
+                            y_pred = pipe.predict(X)
+                            
+                            # Compute MAE overall and by Property_Type
+                            df_eval = pd.DataFrame({
+                                "y_true": y_true.values,
+                                "y_pred": y_pred,
+                                "abs_err": np.abs(y_true.values - y_pred)
+                            })
+                            
+                            # Add Property_Type for grouping if available
+                            if property_type_original is not None:
+                                df_eval["Property_Type"] = property_type_original.values
+                                
+                                # Map Property_Type values to UI-friendly names
+                                property_type_map = {
+                                    "CONDO": "Condo",
+                                    "5PLEX_ET_MOINS": "Plex",
+                                    "6PLEX_ET_PLUS": "Plex",  # Map both plex types to "Plex"
+                                    "UNIFAMILIALE": "SFH"
+                                }
+                                df_eval["Property_Type_UI"] = df_eval["Property_Type"].map(property_type_map).fillna(df_eval["Property_Type"])
+                                
+                                # Compute overall MAE
+                                overall_mae = df_eval["abs_err"].mean()
+                                
+                                # Compute MAE by Property Type (using UI-friendly names)
+                                mae_by_type = (
+                                    df_eval
+                                    .groupby("Property_Type_UI")["abs_err"]
+                                    .mean()
+                                    .reset_index()
+                                    .rename(columns={"Property_Type_UI": "Property Type", "abs_err": "MAE"})
+                                )
+                                mae_by_type["MAE"] = mae_by_type["MAE"].round(0).astype(int)
+                                
+                                # Display results
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    st.metric("Overall MAE", f"${overall_mae:,.0f}")
+                                with col2:
+                                    st.metric("Number of Properties", len(df_eval))
+                                
+                                st.subheader("MAE by Property Type")
+                                st.dataframe(mae_by_type, use_container_width=True)
+                                
+                                # Show sample counts by property type
+                                st.caption(f"Sample sizes: {df_eval.groupby('Property_Type_UI').size().to_dict()}")
+                            else:
+                                # If Property_Type is not available, just show overall MAE
+                                overall_mae = df_eval["abs_err"].mean()
+                                st.metric("Overall MAE", f"${overall_mae:,.0f}")
+                                st.info("Property Type information not available in the dataset for segment analysis.")
+                                
+                except Exception as e:
+                    st.warning(f"Could not compute PMR evaluation metrics: {e}")
+                    if show_debug:
+                        import traceback
+                        st.code(traceback.format_exc())
+        
         else:
             st.info(f"ℹ️ No models found for {selected_region['name']}. Click the button above to train models.")
     
