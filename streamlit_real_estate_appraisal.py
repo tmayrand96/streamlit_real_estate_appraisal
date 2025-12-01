@@ -78,9 +78,19 @@ def model_path_for(region_key, alpha):
     q = {0.05: "q05", 0.5: "q50", 0.95: "q95"}[alpha]
     return MODELS_DIR / f"{prefix}_model_{q}.joblib"
 
+def pmr_submodel_path_for(submodel_type, alpha):
+    """Get model path for PMR submodel (CONDO or PLEX_SFH) and quantile"""
+    q = {0.05: "q05", 0.5: "q50", 0.95: "q95"}[alpha]
+    return MODELS_DIR / f"pmr_{submodel_type.lower()}_model_{q}.joblib"
+
 def models_available(region_key: str):
     """Check if all three quantile models exist for a region"""
-    return all(model_path_for(region_key, a).exists() for a in (0.05, 0.5, 0.95))
+    if region_key == "PMR":
+        # For PMR, check both submodels exist
+        return (all(pmr_submodel_path_for("CONDO", a).exists() for a in (0.05, 0.5, 0.95)) and
+                all(pmr_submodel_path_for("PLEX_SFH", a).exists() for a in (0.05, 0.5, 0.95)))
+    else:
+        return all(model_path_for(region_key, a).exists() for a in (0.05, 0.5, 0.95))
 
 def build_input_form(region_key: str):
     """Build input form for a specific region and return inputs, submitted flag, and missing fields"""
@@ -480,6 +490,11 @@ def train_quantile_models(region_key="BDF"):
     if not csv_path.exists():
         raise FileNotFoundError(f"Dataset introuvable : {csv_path}")
     
+    # Special handling for PMR: split into Condo and Plex+SFH submodels
+    if region_key == "PMR":
+        return train_pmr_segmented_models()
+    
+    # Standard training for other regions
     with st.spinner(f"Loading and preparing data for {config['name']}..."):
         df = load_region_dataframe_simple(region_key)
         df = create_features(df, region_key, is_training=True)
@@ -568,6 +583,169 @@ def train_quantile_models(region_key="BDF"):
             joblib.dump(model_data, path)
 
     return metrics
+
+def train_pmr_segmented_models():
+    """Train separate PMR models for Condo and Plex+SFH segments"""
+    config = REGION_CONFIG["PMR"]
+    csv_path = config["data_path"]
+    
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Dataset introuvable : {csv_path}")
+    
+    # Load raw PMR data
+    with st.spinner("Loading PMR data..."):
+        df_raw = load_region_dataframe_simple("PMR")
+        
+        # Normalize Property_Type values to handle various formats
+        if "Property_Type" not in df_raw.columns:
+            # Try to infer from old indicator columns
+            prop_type_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+            available_prop_cols = [col for col in prop_type_cols if col in df_raw.columns]
+            if available_prop_cols:
+                prop_type_df = df_raw[available_prop_cols]
+                df_raw["Property_Type"] = prop_type_df.idxmax(axis=1)
+                df_raw.loc[prop_type_df.sum(axis=1) == 0, "Property_Type"] = "UNIFAMILIALE"
+        
+        # Normalize Property_Type values to standard format
+        # Map various formats to: "Condo", "Plex", "SFH"
+        property_type_mapping = {
+            "CONDO": "Condo",
+            "Condo": "Condo",
+            "condo": "Condo",
+            "5PLEX_ET_MOINS": "Plex",
+            "6PLEX_ET_PLUS": "Plex",
+            "Plex": "Plex",
+            "plex": "Plex",
+            "UNIFAMILIALE": "SFH",
+            "SFH": "SFH",
+            "sfh": "SFH",
+            "Unifamiliale": "SFH"
+        }
+        if "Property_Type" in df_raw.columns:
+            df_raw["Property_Type"] = df_raw["Property_Type"].map(property_type_mapping).fillna(df_raw["Property_Type"])
+        
+        # Create two subsets
+        df_condo = df_raw[df_raw["Property_Type"] == "Condo"].copy()
+        df_plex_sfh = df_raw[df_raw["Property_Type"].isin(["Plex", "SFH"])].copy()
+        
+        if len(df_condo) == 0:
+            raise ValueError("No Condo properties found in PMR dataset")
+        if len(df_plex_sfh) == 0:
+            raise ValueError("No Plex or SFH properties found in PMR dataset")
+        
+        st.info(f"PMR segmentation: {len(df_condo)} Condos, {len(df_plex_sfh)} Plex+SFH")
+    
+    metrics = {}
+    
+    # Train Condo models
+    with st.spinner("Training PMR Condo models..."):
+        metrics_condo = train_pmr_segment(df_condo, "CONDO")
+        metrics["CONDO_MAE"] = metrics_condo.get("MAE", None)
+    
+    # Train Plex+SFH models
+    with st.spinner("Training PMR Plex+SFH models..."):
+        metrics_plex_sfh = train_pmr_segment(df_plex_sfh, "PLEX_SFH")
+        metrics["PLEX_SFH_MAE"] = metrics_plex_sfh.get("MAE", None)
+    
+    # Overall MAE (weighted average)
+    if metrics["CONDO_MAE"] is not None and metrics["PLEX_SFH_MAE"] is not None:
+        n_condo = len(df_condo)
+        n_plex_sfh = len(df_plex_sfh)
+        total = n_condo + n_plex_sfh
+        metrics["MAE"] = (metrics["CONDO_MAE"] * n_condo + metrics["PLEX_SFH_MAE"] * n_plex_sfh) / total
+    
+    return metrics
+
+def train_pmr_segment(df_segment, segment_name):
+    """Train quantile models for a PMR segment (CONDO or PLEX_SFH)"""
+    # Apply preprocessing
+    df_proc = create_features(df_segment.copy(), region_key="PMR", is_training=True)
+    
+    if CANON_TARGET not in df_proc.columns:
+        raise ValueError(f"[PMR {segment_name}] Target '{CANON_TARGET}' missing after feature prep. Columns: {list(df_proc.columns)}")
+    
+    df_proc = df_proc.dropna(subset=[CANON_TARGET])
+    
+    if len(df_proc) == 0:
+        raise ValueError(f"[PMR {segment_name}] No valid samples after preprocessing")
+    
+    # Get feature columns (all except target)
+    feature_cols = [c for c in df_proc.columns if c != CANON_TARGET]
+    
+    # Remove Property_Type dummy columns (not needed for segmented models)
+    feature_cols = [c for c in feature_cols if not c.startswith("Property_Type_")]
+    
+    # Remove any original property type indicator columns
+    original_prop_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+    feature_cols = [c for c in feature_cols if c not in original_prop_cols]
+    
+    if not feature_cols:
+        raise ValueError(f"[PMR {segment_name}] No usable features. Columns: {list(df_proc.columns)}")
+    
+    X = df_proc[feature_cols]
+    y = df_proc[CANON_TARGET].astype(float)
+    
+    # Build preprocessing pipeline
+    config = REGION_CONFIG["PMR"]
+    num_cols = [col for col in config["num_cols"] if col in feature_cols]
+    cat_cols = [col for col in config["cat_cols"] if col in feature_cols]
+    
+    # Create transformers
+    numeric_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='median')),
+        ('scaler', RobustScaler())
+    ])
+    
+    categorical_transformer = Pipeline(steps=[
+        ('imputer', SimpleImputer(strategy='constant', fill_value='__missing__')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore', drop='first'))
+    ])
+    
+    # Create preprocessor
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ('num', numeric_transformer, num_cols),
+            ('cat', categorical_transformer, cat_cols)
+        ],
+        remainder='drop'
+    )
+    
+    segment_metrics = {}
+    
+    for alpha in [0.05, 0.50, 0.95]:
+        # Create full pipeline
+        pipe = Pipeline([
+            ('preproc', preprocessor),
+            ('model', GradientBoostingRegressor(loss="quantile", alpha=alpha, random_state=42))
+        ])
+        
+        # Train-test split
+        X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+        
+        # Train pipeline
+        pipe.fit(X_train, y_train)
+        
+        # Store model data
+        model_data = {
+            "pipeline": pipe,
+            "features": feature_cols,
+            "region": "PMR",
+            "segment": segment_name,
+            "num_cols": num_cols,
+            "cat_cols": cat_cols
+        }
+        
+        # For the median model (alpha=0.50), also store MAE
+        if alpha == 0.50:
+            y_pred_val = pipe.predict(X_val)
+            segment_metrics["MAE"] = mean_absolute_error(y_val, y_pred_val)
+            model_data["mae"] = segment_metrics["MAE"]
+        
+        # Save pipeline
+        path = pmr_submodel_path_for(segment_name, alpha)
+        joblib.dump(model_data, path)
+    
+    return segment_metrics
 
 def predict_with_models(region_key="BDF", **kwargs):
     """Make predictions using all three quantile models for a specific region"""
@@ -1141,7 +1319,10 @@ def main():
         """)
         
         # Check model status
-        model_exists = model_path_for(region_key, 0.5).exists()
+        if region_key == "PMR":
+            model_exists = models_available(region_key)
+        else:
+            model_exists = model_path_for(region_key, 0.5).exists()
         if model_exists:
             st.markdown('<div class="success-box">', unsafe_allow_html=True)
             st.markdown("✅ **Model Status**: Quantile models are trained and ready to use!")
@@ -1175,46 +1356,85 @@ def main():
                 st.stop()
             # Load q05/q50/q95 and predict
             try:
-                data50 = joblib.load(model_path_for(region_key, 0.5))
-                data05 = joblib.load(model_path_for(region_key, 0.05))
-                data95 = joblib.load(model_path_for(region_key, 0.95))
-                pipe50 = data50["pipeline"]
-                feats = data50["features"]  # Get feature columns from model metadata
-                
-                # Build base input dict with numeric features (excluding Property_Type for now)
-                base_input = {}
-                property_type_value = None
-                
-                for key, value in inputs.items():
-                    if key == "Property_Type":
-                        property_type_value = value
-                    else:
-                        base_input[key] = value
-                
-                # Create base DataFrame with numeric features
-                X_input = pd.DataFrame([base_input])
-                
-                # One-hot encode Property_Type if it exists (for PMR or any region with Property_Type)
-                # Check if Property_Type dummy columns are expected in the model features
-                has_property_type_dummies = any(col.startswith("Property_Type_") for col in feats)
-                
-                if property_type_value is not None and has_property_type_dummies:
-                    # Create a temporary DataFrame with the property type
-                    temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+                # PMR routing: determine which submodel to use
+                if region_key == "PMR":
+                    # Get Property_Type from inputs (UI value: "Condo", "Plex", "SFH")
+                    property_type_ui = inputs.get("Property_Type")
+                    if property_type_ui is None:
+                        st.error("Property Type is required for PMR predictions")
+                        st.stop()
                     
-                    # One-hot encode using the same pattern as training
-                    type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+                    # Map UI value to internal value for routing
+                    # The UI sends "CONDO", "5PLEX_ET_MOINS", or "UNIFAMILIALE" based on build_input_form
+                    # But we need to map to segment names
+                    if property_type_ui == "CONDO":
+                        submodel_type = "CONDO"
+                    else:  # "5PLEX_ET_MOINS" or "UNIFAMILIALE" -> Plex or SFH
+                        submodel_type = "PLEX_SFH"
                     
-                    # Ensure all possible Property_Type dummy columns exist (add missing ones with 0)
-                    # Use the same possible types as in training
-                    possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
-                    for prop_type in possible_types:
-                        dummy_col = f"Property_Type_{prop_type}"
-                        if dummy_col not in type_dummies.columns:
-                            type_dummies[dummy_col] = 0
+                    # Load the appropriate PMR submodel
+                    q05_path = pmr_submodel_path_for(submodel_type, 0.05)
+                    q50_path = pmr_submodel_path_for(submodel_type, 0.5)
+                    q95_path = pmr_submodel_path_for(submodel_type, 0.95)
                     
-                    # Merge these dummies into the main input row
-                    X_input = pd.concat([X_input, type_dummies], axis=1)
+                    data50 = joblib.load(q50_path)
+                    data05 = joblib.load(q05_path)
+                    data95 = joblib.load(q95_path)
+                    pipe50 = data50["pipeline"]
+                    feats = data50["features"]
+                    
+                    # For PMR submodels, Property_Type is not needed (already segmented)
+                    # Build base input dict without Property_Type
+                    base_input = {}
+                    for key, value in inputs.items():
+                        if key != "Property_Type":
+                            base_input[key] = value
+                    
+                    # Create base DataFrame with numeric features
+                    X_input = pd.DataFrame([base_input])
+                    
+                else:
+                    # Standard routing for other regions
+                    data50 = joblib.load(model_path_for(region_key, 0.5))
+                    data05 = joblib.load(model_path_for(region_key, 0.05))
+                    data95 = joblib.load(model_path_for(region_key, 0.95))
+                    pipe50 = data50["pipeline"]
+                    feats = data50["features"]
+                    
+                    # Build base input dict with numeric features (excluding Property_Type for now)
+                    base_input = {}
+                    property_type_value = None
+                    
+                    for key, value in inputs.items():
+                        if key == "Property_Type":
+                            property_type_value = value
+                        else:
+                            base_input[key] = value
+                    
+                    # Create base DataFrame with numeric features
+                    X_input = pd.DataFrame([base_input])
+                    
+                    # One-hot encode Property_Type if it exists (for other regions with Property_Type)
+                    # Check if Property_Type dummy columns are expected in the model features
+                    has_property_type_dummies = any(col.startswith("Property_Type_") for col in feats)
+                    
+                    if property_type_value is not None and has_property_type_dummies:
+                        # Create a temporary DataFrame with the property type
+                        temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+                        
+                        # One-hot encode using the same pattern as training
+                        type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+                        
+                        # Ensure all possible Property_Type dummy columns exist (add missing ones with 0)
+                        # Use the same possible types as in training
+                        possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+                        for prop_type in possible_types:
+                            dummy_col = f"Property_Type_{prop_type}"
+                            if dummy_col not in type_dummies.columns:
+                                type_dummies[dummy_col] = 0
+                        
+                        # Merge these dummies into the main input row
+                        X_input = pd.concat([X_input, type_dummies], axis=1)
                 
                 # Align X_input columns with feature_cols from training
                 # Add any missing columns (e.g., some dummy types not present for that selection) with 0
@@ -1235,7 +1455,8 @@ def main():
                 # MAE if present
                 mae = data50.get("mae")
                 if mae is not None:
-                    st.caption(f"Model MAE (validation): ${mae:,.0f}")
+                    segment_info = f" ({data50.get('segment', '')})" if region_key == "PMR" else ""
+                    st.caption(f"Model MAE (validation): ${mae:,.0f}{segment_info}")
 
                 # SHAP / Waterfall (keep your existing functions; wrap in try/except)
                 try:
@@ -1254,7 +1475,10 @@ def main():
         st.header(f"📈 Model Training & Performance - {selected_region['name']}")
         
         # Check if models exist for this region
-        model_path = model_path_for(region_key, 0.5)
+        if region_key == "PMR":
+            model_path = pmr_submodel_path_for("CONDO", 0.5)  # Check one submodel as indicator
+        else:
+            model_path = model_path_for(region_key, 0.5)
         
         if st.button(f"🚀 Train Quantile Models for {selected_region['name']}", type="primary"):
             try:
@@ -1264,25 +1488,51 @@ def main():
                 st.success(f"✅ Models for {selected_region['name']} trained and saved successfully!")
                 
                 # Display metrics
-                if "MAE" in metrics:
-                    st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
-                    st.markdown("*Average prediction error*")
+                if region_key == "PMR":
+                    # Show segment-specific MAEs
+                    if "CONDO_MAE" in metrics and metrics["CONDO_MAE"] is not None:
+                        st.metric("Condo MAE", f"${metrics['CONDO_MAE']:,.0f}")
+                    if "PLEX_SFH_MAE" in metrics and metrics["PLEX_SFH_MAE"] is not None:
+                        st.metric("Plex+SFH MAE", f"${metrics['PLEX_SFH_MAE']:,.0f}")
+                    if "MAE" in metrics and metrics["MAE"] is not None:
+                        st.metric("Overall MAE (weighted)", f"${metrics['MAE']:,.0f}")
+                        st.markdown("*Weighted average across segments*")
+                else:
+                    if "MAE" in metrics:
+                        st.metric("Mean Absolute Error", f"${metrics['MAE']:,.0f}")
+                        st.markdown("*Average prediction error*")
                 
                 
                 # Temporary Model Downloads
                 st.subheader("Temporary Model Downloads (this branch only)")
                 alpha_map = {0.05: "q05", 0.50: "q50", 0.95: "q95"}
-                model_paths = [model_path_for(region_key, a) for a in (0.05, 0.50, 0.95)]
-                alphas = [0.05, 0.50, 0.95]
                 
-                for alpha, path in zip(alphas, model_paths):
-                    if path.exists():
-                        st.download_button(
-                            label=f"⬇️ Download model ({alpha_map[alpha]})",
-                            data=_read_binary(path),
-                            file_name=path.name,
-                            mime="application/octet-stream"
-                        )
+                if region_key == "PMR":
+                    # Show downloads for both PMR submodels
+                    for submodel in ["CONDO", "PLEX_SFH"]:
+                        st.write(f"**{submodel} Models:**")
+                        for alpha in [0.05, 0.50, 0.95]:
+                            path = pmr_submodel_path_for(submodel, alpha)
+                            if path.exists():
+                                st.download_button(
+                                    label=f"⬇️ Download {submodel} model ({alpha_map[alpha]})",
+                                    data=_read_binary(path),
+                                    file_name=path.name,
+                                    mime="application/octet-stream",
+                                    key=f"pmr_{submodel}_{alpha}"
+                                )
+                else:
+                    model_paths = [model_path_for(region_key, a) for a in (0.05, 0.50, 0.95)]
+                    alphas = [0.05, 0.50, 0.95]
+                    
+                    for alpha, path in zip(alphas, model_paths):
+                        if path.exists():
+                            st.download_button(
+                                label=f"⬇️ Download model ({alpha_map[alpha]})",
+                                data=_read_binary(path),
+                                file_name=path.name,
+                                mime="application/octet-stream"
+                            )
                 st.caption("These download buttons are temporary and will be removed when merging to main.")
                 
                 # Model info
@@ -1328,8 +1578,23 @@ def main():
             except Exception as e:
                 st.warning(f"Model files exist but may be corrupted: {e}. Please retrain.")
             
+            # For PMR, show submodel info
+            if region_key == "PMR" and models_available("PMR"):
+                try:
+                    for submodel in ["CONDO", "PLEX_SFH"]:
+                        submodel_path = pmr_submodel_path_for(submodel, 0.5)
+                        if submodel_path.exists():
+                            data = joblib.load(submodel_path)
+                            st.info(f"**{submodel} Model Details:**")
+                            st.write(f"- Features: {len(data['features'])} attributes")
+                            st.write(f"- Segment: {data.get('segment', 'Unknown')}")
+                            if "mae" in data:
+                                st.write(f"- MAE: ${data['mae']:,.0f}")
+                except Exception as e:
+                    st.warning(f"Could not load PMR submodel info: {e}")
+            
             # PMR-specific evaluation: Overall MAE and MAE by Property Type
-            if region_key == "PMR" and model_path.exists():
+            if region_key == "PMR" and models_available("PMR"):
                 try:
                     st.divider()
                     st.subheader("PMR – Overall MAE and MAE by Property Type")
