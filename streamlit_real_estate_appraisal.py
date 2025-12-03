@@ -453,6 +453,18 @@ def create_features(df, region_key="BDF", is_training=True):
                 if df[col].dtype == 'object':
                     df[col] = df[col].map({'Yes': 1, 'No': 0, 'True': 1, 'False': 0, True: 1, False: 0}).fillna(0)
     
+    # Handle Sainte-Rose comma decimal separators
+    if region_key == "Ste-Rose":
+        # Identify numeric columns that may contain comma-decimal strings
+        numeric_cols = config["num_cols"]
+        for col in numeric_cols:
+            if col in df.columns:
+                if df[col].dtype == "object":
+                    # Replace comma with dot and convert to numeric
+                    df[col] = df[col].astype(str).str.replace(",", ".", regex=False)
+                # Convert to numeric, coercing errors to NaN
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+    
     # One-hot encode Property_Type if it exists (for PMR or any region)
     if "Property_Type" in df.columns:
         # Define all possible Property_Type values to ensure consistent dummy columns
@@ -842,10 +854,20 @@ def get_model_mae(region_key="BDF"):
 def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs):
     """
     Create a SHAP waterfall chart showing how the predicted price is constructed.
+    For PMR, only shows 6 user-facing attributes and imputes taxes into base value.
     """
     try:
-        # Load the median model (q50)
-        path = model_path_for(region_key, 0.5)
+        # PMR special handling: route to correct submodel
+        if region_key == "PMR":
+            property_type_ui = kwargs.get("Property_Type")
+            if property_type_ui == "CONDO":
+                submodel_type = "CONDO"
+            else:  # "5PLEX_ET_MOINS" or "UNIFAMILIALE"
+                submodel_type = "PLEX_SFH"
+            path = pmr_submodel_path_for(submodel_type, 0.5)
+        else:
+            path = model_path_for(region_key, 0.5)
+        
         data = joblib.load(path)
         pipe = data["pipeline"]
         features = data["features"]
@@ -861,28 +883,33 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
             else:
                 base_input[key] = value
         
-        # Create base DataFrame with numeric features
-        inputs = pd.DataFrame([base_input])
-        
-        # One-hot encode Property_Type if it exists and model expects Property_Type dummies
-        has_property_type_dummies = any(col.startswith("Property_Type_") for col in features)
-        
-        if property_type_value is not None and has_property_type_dummies:
-            # Create a temporary DataFrame with the property type
-            temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+        # For PMR submodels, Property_Type is not needed (already segmented)
+        if region_key == "PMR":
+            # Build input without Property_Type
+            inputs = pd.DataFrame([base_input])
+        else:
+            # Create base DataFrame with numeric features
+            inputs = pd.DataFrame([base_input])
             
-            # One-hot encode using the same pattern as training
-            type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+            # One-hot encode Property_Type if it exists and model expects Property_Type dummies
+            has_property_type_dummies = any(col.startswith("Property_Type_") for col in features)
             
-            # Ensure all possible Property_Type dummy columns exist
-            possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
-            for prop_type in possible_types:
-                dummy_col = f"Property_Type_{prop_type}"
-                if dummy_col not in type_dummies.columns:
-                    type_dummies[dummy_col] = 0
-            
-            # Merge these dummies into the main input row
-            inputs = pd.concat([inputs, type_dummies], axis=1)
+            if property_type_value is not None and has_property_type_dummies:
+                # Create a temporary DataFrame with the property type
+                temp_type_df = pd.DataFrame({"Property_Type": [property_type_value]})
+                
+                # One-hot encode using the same pattern as training
+                type_dummies = pd.get_dummies(temp_type_df["Property_Type"], prefix="Property_Type")
+                
+                # Ensure all possible Property_Type dummy columns exist
+                possible_types = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+                for prop_type in possible_types:
+                    dummy_col = f"Property_Type_{prop_type}"
+                    if dummy_col not in type_dummies.columns:
+                        type_dummies[dummy_col] = 0
+                
+                # Merge these dummies into the main input row
+                inputs = pd.concat([inputs, type_dummies], axis=1)
         
         # Align inputs columns with feature_cols from training
         for col in features:
@@ -914,29 +941,85 @@ def create_shap_waterfall_chart(region_key="BDF", predicted_value=None, **kwargs
         if np.isnan(shap_contributions).any():
             raise ValueError("NaN in SHAP contributions after preprocessing.")
         
-        # Create waterfall data
-        waterfall_data = []
-        cumulative_value = base_value
-        
-        # Base
-        waterfall_data.append({
-            'feature': 'Base Value',
-            'contribution': 0.0,
-            'cumulative': base_value,
-            'color': '#1f77b4'
-        })
-
-        # Contributions
-        for feature, contribution in zip(feature_names, shap_contributions):
-            c = float(contribution)
-            cumulative_value += c
-            color = '#2ca02c' if c >= 0 else '#d62728'
+        # PMR special handling: filter to 6 user-facing attributes and impute taxes into base
+        if region_key == "PMR":
+            # Define the 6 user-facing attributes
+            user_facing_attrs = {
+                "ETAGES": "Floor(s)",
+                "AGE": "Age",
+                "AIRE_HABITABLE": "Building Area (m2)",
+                "Prox_Parc": "Park Proximity",
+                "Prox_Metro": "Metro Proximity"
+            }
+            # Property Type is already handled by segmentation, so we don't need to show it
+            
+            # Aggregate SHAP contributions for user-facing attributes
+            user_attr_contributions = {}
+            taxes_contribution = 0.0
+            other_contributions = 0.0
+            
+            for feature, contribution in zip(feature_names, shap_contributions):
+                c = float(contribution)
+                if feature in user_facing_attrs:
+                    # Use friendly name
+                    user_attr_contributions[user_facing_attrs[feature]] = user_attr_contributions.get(user_facing_attrs[feature], 0.0) + c
+                elif feature == "TAXES_AN":
+                    # Impute taxes into base value
+                    taxes_contribution += c
+                else:
+                    # Other non-user-facing features also go into base
+                    other_contributions += c
+            
+            # Adjust base value to include taxes and other non-user-facing features
+            adjusted_base_value = base_value + taxes_contribution + other_contributions
+            
+            # Create waterfall data with only user-facing attributes
+            waterfall_data = []
+            cumulative_value = adjusted_base_value
+            
+            # Base (includes taxes and other non-user features)
             waterfall_data.append({
-                'feature': feature,
-                'contribution': c,
-                'cumulative': cumulative_value,
-                'color': color
+                'feature': 'Base Value',
+                'contribution': 0.0,
+                'cumulative': adjusted_base_value,
+                'color': '#1f77b4'
             })
+            
+            # Contributions from user-facing attributes only
+            for attr_name, contribution in user_attr_contributions.items():
+                c = float(contribution)
+                cumulative_value += c
+                color = '#2ca02c' if c >= 0 else '#d62728'
+                waterfall_data.append({
+                    'feature': attr_name,
+                    'contribution': c,
+                    'cumulative': cumulative_value,
+                    'color': color
+                })
+        else:
+            # Standard handling for other regions
+            waterfall_data = []
+            cumulative_value = base_value
+            
+            # Base
+            waterfall_data.append({
+                'feature': 'Base Value',
+                'contribution': 0.0,
+                'cumulative': base_value,
+                'color': '#1f77b4'
+            })
+
+            # Contributions
+            for feature, contribution in zip(feature_names, shap_contributions):
+                c = float(contribution)
+                cumulative_value += c
+                color = '#2ca02c' if c >= 0 else '#d62728'
+                waterfall_data.append({
+                    'feature': feature,
+                    'contribution': c,
+                    'cumulative': cumulative_value,
+                    'color': color
+                })
         
         # Final prediction
         final_val = float(predicted_value) if predicted_value is not None else cumulative_value
@@ -1292,9 +1375,6 @@ def main():
     selected_region = REGION_CONFIG[region_key]
     st.sidebar.info(f"**Selected:** {selected_region['name']}")
     
-    # Debug info checkbox
-    show_debug = st.sidebar.checkbox("Show debug info", value=False)
-    
     # Sidebar navigation
     st.sidebar.title("Navigation")
     page = st.sidebar.selectbox(
@@ -1342,7 +1422,12 @@ def main():
             st.metric("Prediction Range", "5th - 95th percentile", "Confidence Intervals")
         
         with col3:
-            st.metric("Features", "5 Raw Attributes", "Raw attributes for more relevant insights")
+            # Show correct feature count based on region
+            if region_key == "Ste-Rose":
+                feature_count = "6 Raw Attributes"
+            else:
+                feature_count = "5 Raw Attributes"
+            st.metric("Features", feature_count, "Raw attributes for more relevant insights")
     
     elif page == "Property Valuation":
         if not models_available(region_key):
@@ -1550,8 +1635,6 @@ def main():
                 - Full sklearn Pipeline with preprocessing
                 """)
                 
-                if show_debug:
-                    st.info(f"**Debug Info:** Models saved to {MODELS_DIR}")
                 
             except Exception as e:
                 st.error(f"❌ Training failed for {selected_region['name']}: {e}")
@@ -1568,19 +1651,106 @@ def main():
                 st.write("- Algorithm: Gradient Boosting with Quantile Loss")
                 st.write("- Pipeline: Full sklearn Pipeline with preprocessing")
                 
-                if "mae" in data:
+                # For PMR, compute Overall MAE from full dataset
+                if region_key == "PMR" and "mae" in data:
+                    # This is segment-specific MAE, we'll compute Overall MAE separately below
+                    pass
+                elif "mae" in data:
                     st.write(f"- MAE: ${data['mae']:,.0f}")
-                
-                if show_debug:
-                    st.info(f"**Debug Info:** Model loaded from {model_path}")
-                    st.write(f"Pipeline steps: {list(data['pipeline'].named_steps.keys())}")
                     
             except Exception as e:
                 st.warning(f"Model files exist but may be corrupted: {e}. Please retrain.")
             
-            # For PMR, show submodel info
+            # For PMR, show submodel info and compute Overall MAE
             if region_key == "PMR" and models_available("PMR"):
                 try:
+                    # Compute Overall MAE from full dataset
+                    pmr_config = REGION_CONFIG["PMR"]
+                    pmr_csv_path = pmr_config["data_path"]
+                    
+                    if pmr_csv_path.exists():
+                        # Load raw PMR data
+                        df_raw_pmr = load_region_dataframe_simple("PMR")
+                        
+                        # Normalize Property_Type
+                        if "Property_Type" not in df_raw_pmr.columns:
+                            prop_type_cols = ["CONDO", "5PLEX_ET_MOINS", "6PLEX_ET_PLUS", "UNIFAMILIALE"]
+                            available_prop_cols = [col for col in prop_type_cols if col in df_raw_pmr.columns]
+                            if available_prop_cols:
+                                prop_type_df = df_raw_pmr[available_prop_cols]
+                                df_raw_pmr["Property_Type"] = prop_type_df.idxmax(axis=1)
+                                df_raw_pmr.loc[prop_type_df.sum(axis=1) == 0, "Property_Type"] = "UNIFAMILIALE"
+                        
+                        property_type_mapping = {
+                            "CONDO": "Condo", "Condo": "Condo", "condo": "Condo",
+                            "5PLEX_ET_MOINS": "Plex", "6PLEX_ET_PLUS": "Plex", "Plex": "Plex",
+                            "UNIFAMILIALE": "SFH", "SFH": "SFH", "sfh": "SFH"
+                        }
+                        if "Property_Type" in df_raw_pmr.columns:
+                            df_raw_pmr["Property_Type"] = df_raw_pmr["Property_Type"].map(property_type_mapping).fillna(df_raw_pmr["Property_Type"])
+                        
+                        # Apply preprocessing
+                        df_proc_pmr = create_features(df_raw_pmr.copy(), region_key="PMR", is_training=True)
+                        df_proc_pmr = df_proc_pmr.dropna(subset=[CANON_TARGET])
+                        
+                        y_true_pmr = df_proc_pmr[CANON_TARGET].astype(float)
+                        y_pred_pmr_list = []
+                        
+                        # Route to correct submodel and predict
+                        if "Property_Type" in df_raw_pmr.columns:
+                            property_type_orig = df_raw_pmr["Property_Type"].loc[df_proc_pmr.index]
+                            
+                            for segment_type in ["Condo", "Plex", "SFH"]:
+                                segment_mask = property_type_orig == segment_type
+                                if segment_mask.sum() == 0:
+                                    continue
+                                
+                                if segment_type == "Condo":
+                                    submodel_type = "CONDO"
+                                else:
+                                    submodel_type = "PLEX_SFH"
+                                
+                                pmr_model_path = pmr_submodel_path_for(submodel_type, 0.5)
+                                model_data_seg = joblib.load(pmr_model_path)
+                                pipe_seg = model_data_seg["pipeline"]
+                                feature_cols_seg = model_data_seg["features"]
+                                
+                                df_segment = df_proc_pmr[segment_mask].copy()
+                                
+                                for col in feature_cols_seg:
+                                    if col not in df_segment.columns:
+                                        df_segment[col] = 0
+                                
+                                X_segment = df_segment[feature_cols_seg]
+                                y_pred_segment = pipe_seg.predict(X_segment)
+                                
+                                segment_indices = df_segment.index
+                                for idx, pred in zip(segment_indices, y_pred_segment):
+                                    y_pred_pmr_list.append((idx, pred))
+                            
+                            y_pred_pmr_list.sort(key=lambda x: x[0])
+                            y_pred_pmr = np.array([pred for _, pred in y_pred_pmr_list])
+                        else:
+                            # Fallback
+                            pmr_model_path = pmr_submodel_path_for("CONDO", 0.5)
+                            model_data_seg = joblib.load(pmr_model_path)
+                            pipe_seg = model_data_seg["pipeline"]
+                            feature_cols_seg = model_data_seg["features"]
+                            
+                            for col in feature_cols_seg:
+                                if col not in df_proc_pmr.columns:
+                                    df_proc_pmr[col] = 0
+                            
+                            X_pmr = df_proc_pmr[feature_cols_seg]
+                            y_pred_pmr = pipe_seg.predict(X_pmr)
+                        
+                        # Compute Overall MAE
+                        overall_mae_pmr = mean_absolute_error(y_true_pmr, y_pred_pmr)
+                        
+                        # Display Overall MAE in Model Details
+                        st.write(f"- Overall MAE: ${overall_mae_pmr:,.0f}")
+                    
+                    # Show submodel details
                     for submodel in ["CONDO", "PLEX_SFH"]:
                         submodel_path = pmr_submodel_path_for(submodel, 0.5)
                         if submodel_path.exists():
@@ -1589,9 +1759,9 @@ def main():
                             st.write(f"- Features: {len(data['features'])} attributes")
                             st.write(f"- Segment: {data.get('segment', 'Unknown')}")
                             if "mae" in data:
-                                st.write(f"- MAE: ${data['mae']:,.0f}")
+                                st.write(f"- Segment MAE: ${data['mae']:,.0f}")
                 except Exception as e:
-                    st.warning(f"Could not load PMR submodel info: {e}")
+                    st.warning(f"Could not load PMR submodel info or compute Overall MAE: {e}")
             
             # PMR-specific evaluation: Overall MAE and MAE by Property Type
             if region_key == "PMR" and models_available("PMR"):
@@ -1646,25 +1816,83 @@ def main():
                             if property_type_original is not None:
                                 property_type_original = property_type_original.loc[df_proc.index]
                             
-                            # Load PMR Q50 model
-                            pmr_model_path = model_path_for("PMR", 0.5)
-                            model_data = joblib.load(pmr_model_path)
-                            pipe = model_data["pipeline"]
-                            feature_cols = model_data["features"]
-                            
-                            # Prepare X and y
+                            # For PMR, use segmented models to compute Overall MAE
+                            # We need to route each property to the correct submodel
                             y_true = df_proc[target_col].astype(float)
+                            y_pred_list = []
                             
-                            # Ensure df_proc has all feature columns expected by the model
-                            for col in feature_cols:
-                                if col not in df_proc.columns:
-                                    df_proc[col] = 0
+                            # Normalize Property_Type for routing
+                            property_type_mapping = {
+                                "CONDO": "Condo",
+                                "Condo": "Condo",
+                                "condo": "Condo",
+                                "5PLEX_ET_MOINS": "Plex",
+                                "6PLEX_ET_PLUS": "Plex",
+                                "Plex": "Plex",
+                                "UNIFAMILIALE": "SFH",
+                                "SFH": "SFH"
+                            }
                             
-                            # Select features in the correct order
-                            X = df_proc[feature_cols]
-                            
-                            # Make predictions using the pipeline
-                            y_pred = pipe.predict(X)
+                            if property_type_original is not None:
+                                df_proc["Property_Type_Normalized"] = property_type_original.map(property_type_mapping).fillna(property_type_original)
+                                
+                                # Split by segment and predict with appropriate model
+                                for segment_type in ["Condo", "Plex", "SFH"]:
+                                    segment_mask = df_proc["Property_Type_Normalized"] == segment_type
+                                    if segment_mask.sum() == 0:
+                                        continue
+                                    
+                                    # Determine submodel
+                                    if segment_type == "Condo":
+                                        submodel_type = "CONDO"
+                                    else:
+                                        submodel_type = "PLEX_SFH"
+                                    
+                                    # Load appropriate model
+                                    pmr_model_path = pmr_submodel_path_for(submodel_type, 0.5)
+                                    model_data = joblib.load(pmr_model_path)
+                                    pipe = model_data["pipeline"]
+                                    feature_cols = model_data["features"]
+                                    
+                                    # Get segment data
+                                    df_segment = df_proc[segment_mask].copy()
+                                    
+                                    # Ensure df_segment has all feature columns expected by the model
+                                    for col in feature_cols:
+                                        if col not in df_segment.columns:
+                                            df_segment[col] = 0
+                                    
+                                    # Select features in the correct order
+                                    X_segment = df_segment[feature_cols]
+                                    
+                                    # Make predictions
+                                    y_pred_segment = pipe.predict(X_segment)
+                                    
+                                    # Store predictions in correct order
+                                    segment_indices = df_segment.index
+                                    for idx, pred in zip(segment_indices, y_pred_segment):
+                                        y_pred_list.append((idx, pred))
+                                
+                                # Sort by original index and extract predictions
+                                y_pred_list.sort(key=lambda x: x[0])
+                                y_pred = np.array([pred for _, pred in y_pred_list])
+                            else:
+                                # Fallback: use first available submodel
+                                pmr_model_path = pmr_submodel_path_for("CONDO", 0.5)
+                                model_data = joblib.load(pmr_model_path)
+                                pipe = model_data["pipeline"]
+                                feature_cols = model_data["features"]
+                                
+                                # Ensure df_proc has all feature columns expected by the model
+                                for col in feature_cols:
+                                    if col not in df_proc.columns:
+                                        df_proc[col] = 0
+                                
+                                # Select features in the correct order
+                                X = df_proc[feature_cols]
+                                
+                                # Make predictions using the pipeline
+                                y_pred = pipe.predict(X)
                             
                             # Compute MAE overall and by Property_Type
                             df_eval = pd.DataFrame({
@@ -1719,9 +1947,6 @@ def main():
                                 
                 except Exception as e:
                     st.warning(f"Could not compute PMR evaluation metrics: {e}")
-                    if show_debug:
-                        import traceback
-                        st.code(traceback.format_exc())
         
         else:
             st.info(f"ℹ️ No models found for {selected_region['name']}. Click the button above to train models.")
