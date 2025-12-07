@@ -80,8 +80,8 @@ def model_path_for(region_key, alpha):
 
 def pmr_submodel_path_for(submodel_type, alpha):
     """Get model path for PMR submodel (CONDO or PLEX_SFH) and quantile"""
-    q = {0.05: "q05", 0.5: "q50", 0.95: "q95"}[alpha]
-    return MODELS_DIR / f"pmr_{submodel_type.lower()}_model_{q}.joblib"
+    q = {0.05: "Q05", 0.5: "Q50", 0.95: "Q95"}[alpha]
+    return MODELS_DIR / f"PMR_{submodel_type}_{q}.joblib"
 
 def models_available(region_key: str):
     """Check if all three quantile models exist for a region"""
@@ -640,24 +640,37 @@ def train_pmr_segmented_models():
         df_condo = df_raw[df_raw["Property_Type"] == "Condo"].copy()
         df_plex_sfh = df_raw[df_raw["Property_Type"].isin(["Plex", "SFH"])].copy()
         
-        if len(df_condo) == 0:
-            raise ValueError("No Condo properties found in PMR dataset")
-        if len(df_plex_sfh) == 0:
-            raise ValueError("No Plex or SFH properties found in PMR dataset")
-        
         st.info(f"PMR segmentation: {len(df_condo)} Condos, {len(df_plex_sfh)} Plex+SFH")
     
     metrics = {}
     
     # Train Condo models
-    with st.spinner("Training PMR Condo models..."):
-        metrics_condo = train_pmr_segment(df_condo, "CONDO")
-        metrics["CONDO_MAE"] = metrics_condo.get("MAE", None)
+    if len(df_condo) == 0:
+        st.warning("⚠️ No Condo properties found in PMR dataset. Skipping Condo model training.")
+        metrics["CONDO_MAE"] = None
+    else:
+        with st.spinner("Training PMR Condo models (Q05, Q50, Q95)..."):
+            try:
+                metrics_condo = train_pmr_segment(df_condo, "CONDO")
+                metrics["CONDO_MAE"] = metrics_condo.get("MAE", None)
+                st.success(f"✅ Condo models saved: PMR_CONDO_Q05.joblib, PMR_CONDO_Q50.joblib, PMR_CONDO_Q95.joblib")
+            except Exception as e:
+                st.error(f"❌ Failed to train Condo models: {e}")
+                metrics["CONDO_MAE"] = None
     
     # Train Plex+SFH models
-    with st.spinner("Training PMR Plex+SFH models..."):
-        metrics_plex_sfh = train_pmr_segment(df_plex_sfh, "PLEX_SFH")
-        metrics["PLEX_SFH_MAE"] = metrics_plex_sfh.get("MAE", None)
+    if len(df_plex_sfh) == 0:
+        st.warning("⚠️ No Plex or SFH properties found in PMR dataset. Skipping Plex+SFH model training.")
+        metrics["PLEX_SFH_MAE"] = None
+    else:
+        with st.spinner("Training PMR Plex+SFH models (Q05, Q50, Q95)..."):
+            try:
+                metrics_plex_sfh = train_pmr_segment(df_plex_sfh, "PLEX_SFH")
+                metrics["PLEX_SFH_MAE"] = metrics_plex_sfh.get("MAE", None)
+                st.success(f"✅ Plex+SFH models saved: PMR_PLEX_SFH_Q05.joblib, PMR_PLEX_SFH_Q50.joblib, PMR_PLEX_SFH_Q95.joblib")
+            except Exception as e:
+                st.error(f"❌ Failed to train Plex+SFH models: {e}")
+                metrics["PLEX_SFH_MAE"] = None
     
     # Overall MAE (weighted average)
     if metrics["CONDO_MAE"] is not None and metrics["PLEX_SFH_MAE"] is not None:
@@ -723,6 +736,7 @@ def train_pmr_segment(df_segment, segment_name):
     )
     
     segment_metrics = {}
+    saved_files = []
     
     for alpha in [0.05, 0.50, 0.95]:
         # Create full pipeline
@@ -756,6 +770,11 @@ def train_pmr_segment(df_segment, segment_name):
         # Save pipeline
         path = pmr_submodel_path_for(segment_name, alpha)
         joblib.dump(model_data, path)
+        saved_files.append(path.name)
+        
+        # Verify file was saved
+        if not path.exists():
+            raise FileNotFoundError(f"Failed to save model file: {path}")
     
     return segment_metrics
 
