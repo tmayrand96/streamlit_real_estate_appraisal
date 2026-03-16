@@ -11,7 +11,7 @@ Auteuil: (n = 300 properties, upcoming MAE/Segmented MAE)
 Mascouche: (n = 300 properties, upcoming MAE/Segmented MAE)
 
 Montreal structure (n = 1702 properties)
-Plateau Mont-Royal: (n = 580 properties, Condo segment MAE = ±76658$, SFH + Plexe segment = ±310131$, weighted overall MAE = ±162801$)
+Plateau Mont-Royal: (n = 580 properties, Condo segment MAE = ±76658$, SFH + Plex segment = ±310131$, weighted overall MAE = ±162801$)
 Rosemont: (n = 960, upcoming MAE/Segmented MAE)
 Villeray: (n = 162, upcoming MAE/Segmented MAE)
 
