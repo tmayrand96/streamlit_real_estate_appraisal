@@ -1,7 +1,7 @@
 # streamlit_real_estate_appraisal
 
-Appraiser's Information System is currently a Streamlit-based web app meant to
-whether confirm or invalidate your intuition about how much a property is worth in various areas in Quebec:
+**Appraiser's Information System is currently a Streamlit-based web app meant to
+whether confirm or invalidate your intuition about how much a property is worth in various areas in Quebec:**
 
 Laval/Suburban backbone (n = 1139 properties)
 Bois-Des-Filion: (n = 94 properties, MAE = ±77143$)
